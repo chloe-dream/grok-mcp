@@ -40,7 +40,7 @@ claude mcp add grok --scope user `
 
 Or copy `.mcp.json.example` to a project's `.mcp.json` and edit the API key. Verify with `/mcp` in a fresh Claude Code session — should show `grok` connected with 4 tools.
 
-`run-grok-mcp.cmd` is a small wrapper that mirrors `bin\Release\net10.0\` into `%LOCALAPPDATA%\grok-mcp\runtime\` on every launch and runs from there. The build directory is never locked by a running MCP, so you can rebuild while Claude Code has the server loaded — see [Hot rebuild](#hot-rebuild-while-claude-code-is-running) below. On Linux/macOS the lock issue doesn't apply; invoke `dotnet path/to/grok-mcp.dll` directly.
+`run-grok-mcp.cmd` is a small wrapper that mirrors `bin\Release\net10.0\` into `%LOCALAPPDATA%\grok-mcp\runtime\` on every launch and runs from there. The build directory is never locked by a running MCP, so you can rebuild while Claude Code has the server loaded — see [Hot rebuild](#hot-rebuild-while-claude-code-is-running) below. The Linux/macOS equivalent is `run-grok-mcp.sh`, which copies into `${XDG_DATA_HOME:-~/.local/share}/grok-mcp/runtime` and `exec`s dotnet — those platforms don't have the lock issue, the wrapper just keeps the registration shape identical.
 
 ## Hot rebuild while Claude Code is running
 

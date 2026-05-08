@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+.vscode/
+*.suo
+*.userosscache
+*.sln.docstates
+.mcp.json
+*.log
+*.stackdump
+test-output/

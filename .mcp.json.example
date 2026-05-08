@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "grok": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": [
+        "C:\\Users\\goosefx\\SynologyDrive\\PROJECTS\\grok-mcp\\bin\\Release\\net10.0\\grok-mcp.dll"
+      ],
+      "env": {
+        "XAI_API_KEY": "xai-REPLACE_ME"
+      }
+    }
+  }
+}

@@ -44,21 +44,15 @@ Or copy `.mcp.json.example` to a project's `.mcp.json` and edit the API key. Ver
 
 ## Hot rebuild while Claude Code is running
 
-With the wrapper in place, the typical edit cycle is:
+With the wrapper in place, hot reload is one step:
 
-1. Edit code.
-2. `dotnet build -c Release` — succeeds even if Claude Code has the old DLL loaded; the build only writes to `bin\`, which the running MCP doesn't hold.
-3. To pick up the new code, kill the MCP child process and reconnect. The MCP shows up as a `dotnet.exe` whose command line points at `%LOCALAPPDATA%\grok-mcp\runtime\grok-mcp.dll`:
+```powershell
+dotnet build -c Release
+```
 
-   ```powershell
-   Get-CimInstance Win32_Process -Filter "Name='dotnet.exe'" |
-     Where-Object { $_.CommandLine -match 'grok-mcp\\runtime\\grok-mcp\.dll' } |
-     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-   ```
+That's it. The running MCP watches `bin\Release\net10.0\grok-mcp.dll` (via the `GROK_MCP_BUILD_DIR` env var the launcher sets) and shuts itself down ~2 seconds after the build finishes. Claude Code reconnects, the launcher re-syncs `bin\` → `runtime\`, and the new code is live. If Claude Code doesn't auto-reconnect, run `/mcp` once.
 
-4. In Claude Code, run `/mcp` and reconnect `grok` — the wrapper re-syncs from the fresh `bin\` and the new code is live. No Claude Code restart needed.
-
-If you don't want to deal with finding the PID, restarting Claude Code also works — the next session refreshes the runtime copy from `bin\` automatically.
+The build always succeeds because `bin\` is never the path the MCP loads from — that's the runtime mirror in `%LOCALAPPDATA%\grok-mcp\runtime\`. To disable the auto-shutdown (e.g., during noisy rebuilds), unset `GROK_MCP_BUILD_DIR` in your registration.
 
 ## Configuration (env vars)
 

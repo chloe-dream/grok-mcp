@@ -46,6 +46,7 @@ try
     builder.Services.AddSingleton<ChatSessionStore>();
     builder.Services.AddSingleton<ImageInputResolver>();
     builder.Services.AddSingleton<ImageWriter>();
+    builder.Services.AddHostedService<BuildWatcher>();
     builder.Services.AddHttpClient<GrokClient>((sp, http) =>
     {
         var opts = sp.GetRequiredService<IOptions<GrokOptions>>().Value;

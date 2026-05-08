@@ -22,6 +22,9 @@ fi
 mkdir -p "$DST"
 cp -R "$SRC/." "$DST/"
 
+# Tell the MCP where to watch for new builds so it can self-shutdown on rebuild.
+export GROK_MCP_BUILD_DIR="$SRC"
+
 # Replace this shell with dotnet so stdio pipes and signals go straight to
 # the .NET host — no intermediate shell process to manage.
 exec dotnet "$DST/grok-mcp.dll" "$@"

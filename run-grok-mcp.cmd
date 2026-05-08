@@ -23,6 +23,9 @@ if not exist "%SRC%\grok-mcp.dll" (
 
 if not exist "%DST%" mkdir "%DST%"
 
+rem Tell the MCP where to watch for new builds so it can self-shutdown on rebuild.
+set "GROK_MCP_BUILD_DIR=%SRC%"
+
 rem Mirror the build output into the runtime location. /Y overwrite, /Q quiet,
 rem /E include subdirs (runtimes\, etc.), /I treat dest as directory.
 xcopy /Y /Q /E /I "%SRC%\*" "%DST%\" >nul

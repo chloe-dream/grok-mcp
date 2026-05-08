@@ -11,3 +11,5 @@ obj/
 *.log
 *.stackdump
 test-output/
+.env.local
+.env.*.local

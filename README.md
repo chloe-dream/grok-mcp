@@ -35,10 +35,30 @@ Easiest — user-scoped install, every project gets it:
 ```powershell
 claude mcp add grok --scope user `
   --env XAI_API_KEY=xai-... `
-  -- dotnet "C:\Users\goosefx\SynologyDrive\PROJECTS\grok-mcp\bin\Release\net10.0\grok-mcp.dll"
+  -- "C:\Users\goosefx\SynologyDrive\PROJECTS\grok-mcp\run-grok-mcp.cmd"
 ```
 
 Or copy `.mcp.json.example` to a project's `.mcp.json` and edit the API key. Verify with `/mcp` in a fresh Claude Code session — should show `grok` connected with 4 tools.
+
+`run-grok-mcp.cmd` is a small wrapper that mirrors `bin\Release\net10.0\` into `%LOCALAPPDATA%\grok-mcp\runtime\` on every launch and runs from there. The build directory is never locked by a running MCP, so you can rebuild while Claude Code has the server loaded — see [Hot rebuild](#hot-rebuild-while-claude-code-is-running) below. On Linux/macOS the lock issue doesn't apply; invoke `dotnet path/to/grok-mcp.dll` directly.
+
+## Hot rebuild while Claude Code is running
+
+With the wrapper in place, the typical edit cycle is:
+
+1. Edit code.
+2. `dotnet build -c Release` — succeeds even if Claude Code has the old DLL loaded; the build only writes to `bin\`, which the running MCP doesn't hold.
+3. To pick up the new code, kill the MCP child process and reconnect. The MCP shows up as a `dotnet.exe` whose command line points at `%LOCALAPPDATA%\grok-mcp\runtime\grok-mcp.dll`:
+
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='dotnet.exe'" |
+     Where-Object { $_.CommandLine -match 'grok-mcp\\runtime\\grok-mcp\.dll' } |
+     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+   ```
+
+4. In Claude Code, run `/mcp` and reconnect `grok` — the wrapper re-syncs from the fresh `bin\` and the new code is live. No Claude Code restart needed.
+
+If you don't want to deal with finding the PID, restarting Claude Code also works — the next session refreshes the runtime copy from `bin\` automatically.
 
 ## Configuration (env vars)
 

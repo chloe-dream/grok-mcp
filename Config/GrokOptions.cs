@@ -11,11 +11,23 @@ public class GrokOptions
     public string ImageModel { get; set; } = "grok-imagine-image";
     public int HttpTimeoutSeconds { get; set; } = 300;
     public int SessionTurnCap { get; set; } = 50;
+    public int ListenPort { get; set; } = 6677;
+    public int LogRetentionDays { get; set; } = 30;
     public string LogDir { get; set; } = "";
     public string LogLevel { get; set; } = "Information";
 
     public static void BindFromEnvironment(GrokOptions o)
     {
+        // Priority: real process env vars > %LOCALAPPDATA% > %USERPROFILE%. The loader only
+        // sets keys that aren't already present, so the second file can't overwrite the first
+        // and neither file can overwrite a real env var.
+        LoadEnvFile(System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "grok-mcp", "config.env"));
+        LoadEnvFile(System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".grok-mcp", "config.env"));
+
         o.ApiKey = Environment.GetEnvironmentVariable("XAI_API_KEY") ?? "";
         o.ChatModel = NonEmpty("GROK_MCP_CHAT_MODEL", o.ChatModel);
         o.CreativeModel = NonEmpty("GROK_MCP_CREATIVE_MODEL", o.CreativeModel);
@@ -32,11 +44,36 @@ public class GrokOptions
             o.HttpTimeoutSeconds = t;
         if (int.TryParse(Environment.GetEnvironmentVariable("GROK_MCP_SESSION_CAP"), out var c) && c > 0)
             o.SessionTurnCap = c;
+        if (int.TryParse(Environment.GetEnvironmentVariable("GROK_MCP_PORT"), out var p) && p > 0 && p <= 65535)
+            o.ListenPort = p;
+        if (int.TryParse(Environment.GetEnvironmentVariable("GROK_MCP_LOG_RETENTION_DAYS"), out var r) && r >= 0)
+            o.LogRetentionDays = r;
     }
 
     private static string NonEmpty(string envVar, string fallback)
     {
         var v = Environment.GetEnvironmentVariable(envVar);
         return string.IsNullOrWhiteSpace(v) ? fallback : v.Trim();
+    }
+
+    // Reads KEY=VALUE lines into process env. Caller orders files by priority; this method
+    // skips any key that already exists in env, so a higher-priority source is preserved.
+    private static void LoadEnvFile(string path)
+    {
+        if (!System.IO.File.Exists(path)) return;
+        foreach (var raw in System.IO.File.ReadAllLines(path))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var eq = line.IndexOf('=');
+            if (eq < 1) continue;
+            var key = line[..eq].Trim();
+            if (key.Length == 0) continue;
+            var val = line[(eq + 1)..].Trim();
+            if (val.Length >= 2 && ((val[0] == '"' && val[^1] == '"') || (val[0] == '\'' && val[^1] == '\'')))
+                val = val[1..^1];
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
+                Environment.SetEnvironmentVariable(key, val);
+        }
     }
 }

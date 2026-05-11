@@ -1,20 +1,16 @@
 using GrokMcp.Config;
 using GrokMcp.Services;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Console;
 using Microsoft.Extensions.Options;
 using NReco.Logging.File;
 
+var startedAt = DateTime.UtcNow;
+
 try
 {
-    var builder = Host.CreateApplicationBuilder(args);
+    var builder = WebApplication.CreateBuilder(args);
 
-    // Bind options from environment FIRST so logging can use them.
     builder.Services.Configure<GrokOptions>(GrokOptions.BindFromEnvironment);
 
-    // ── Logging — CRITICAL: stdout is reserved for JSON-RPC. Force everything to stderr + a file.
     builder.Logging.ClearProviders();
     builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
@@ -26,6 +22,7 @@ try
     if (!string.IsNullOrWhiteSpace(bootOpts.LogDir))
     {
         Directory.CreateDirectory(bootOpts.LogDir);
+        PruneOldLogs(bootOpts.LogDir, bootOpts.LogRetentionDays);
         var logFilePath = Path.Combine(bootOpts.LogDir, "grok-mcp-{0:yyyy-MM-dd}.log");
         builder.Logging.AddFile(logFilePath, fileOpts =>
         {
@@ -34,39 +31,80 @@ try
         });
     }
 
-    // Fail fast if API key is missing — surfaces in stderr/file before MCP handshake.
     if (string.IsNullOrWhiteSpace(bootOpts.ApiKey))
     {
-        await Console.Error.WriteLineAsync(
-            "FATAL: XAI_API_KEY environment variable is missing. Set it in .mcp.json env block or shell.");
+        const string fatal = "FATAL: XAI_API_KEY is missing. Set it in %LOCALAPPDATA%\\grok-mcp\\config.env or %USERPROFILE%\\.grok-mcp\\config.env.";
+        await Console.Error.WriteLineAsync(fatal);
+        // WinExe subsystem detaches stderr when not redirected — also persist to file
+        // so a user staring at a flapping Scheduled Task can find the reason in the logs.
+        if (!string.IsNullOrWhiteSpace(bootOpts.LogDir))
+        {
+            try
+            {
+                var fatalPath = Path.Combine(bootOpts.LogDir, $"grok-mcp-{DateTime.Now:yyyy-MM-dd}.log");
+                await File.AppendAllTextAsync(fatalPath, $"{DateTime.Now:O} {fatal}{Environment.NewLine}");
+            }
+            catch { }
+        }
         return 2;
     }
 
-    // ── Services
     builder.Services.AddSingleton<ChatSessionStore>();
     builder.Services.AddSingleton<ImageInputResolver>();
     builder.Services.AddSingleton<ImageWriter>();
-    builder.Services.AddHostedService<BuildWatcher>();
     builder.Services.AddHttpClient<GrokClient>((sp, http) =>
     {
         var opts = sp.GetRequiredService<IOptions<GrokOptions>>().Value;
         http.Timeout = TimeSpan.FromSeconds(opts.HttpTimeoutSeconds);
     });
 
-    // ── MCP server (stdio transport, tools auto-discovered from this assembly)
     builder.Services
         .AddMcpServer()
-        .WithStdioServerTransport()
+        .WithHttpTransport(o => o.Stateless = true)
         .WithToolsFromAssembly();
 
-    var host = builder.Build();
-    await host.RunAsync();
+    var app = builder.Build();
+
+    app.MapMcp("/mcp");
+    app.MapGet("/health", (IOptions<GrokOptions> opts) => Results.Ok(new
+    {
+        status = "ok",
+        pid = Environment.ProcessId,
+        version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown",
+        port = opts.Value.ListenPort,
+        apiKeyConfigured = !string.IsNullOrWhiteSpace(opts.Value.ApiKey),
+        uptimeSeconds = (long)(DateTime.UtcNow - startedAt).TotalSeconds,
+    }));
+
+    await app.RunAsync($"http://127.0.0.1:{bootOpts.ListenPort}");
     return 0;
 }
 catch (Exception ex)
 {
-    // Catch-all — never let an exception escape to stdout (would corrupt JSON-RPC stream).
     await Console.Error.WriteLineAsync($"FATAL: {ex.GetType().Name}: {ex.Message}");
     await Console.Error.WriteLineAsync(ex.StackTrace);
     return 1;
 }
+
+static void PruneOldLogs(string dir, int retentionDays)
+{
+    if (retentionDays <= 0) return;
+    try
+    {
+        var cutoff = DateTime.Now.AddDays(-retentionDays);
+        foreach (var f in Directory.EnumerateFiles(dir, "grok-mcp-*.log"))
+        {
+            try
+            {
+                if (File.GetLastWriteTime(f) < cutoff)
+                    File.Delete(f);
+            }
+            catch { /* locked or already gone — skip */ }
+        }
+    }
+    catch { /* dir scan failures must never block startup */ }
+}
+
+// Marker type for assembly version lookup; the top-level statements file otherwise has no
+// addressable class to reflect over.
+public partial class Program { }

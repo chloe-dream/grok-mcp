@@ -1,12 +1,8 @@
 {
   "mcpServers": {
     "grok": {
-      "type": "stdio",
-      "command": "C:\\Users\\goosefx\\SynologyDrive\\PROJECTS\\grok-mcp\\run-grok-mcp.cmd",
-      "args": [],
-      "env": {
-        "XAI_API_KEY": "xai-REPLACE_ME"
-      }
+      "type": "http",
+      "url": "http://127.0.0.1:6677/mcp"
     }
   }
 }

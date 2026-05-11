@@ -1,0 +1,39 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          cache: true
+          cache-dependency-path: "**/*.csproj"
+
+      - name: dotnet publish
+        shell: pwsh
+        run: dotnet publish GrokMcp.csproj -c Release -o bin\win-x64
+
+      - name: Boot smoke (missing key must exit 2)
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "bin\win-x64\grok-mcp.exe" `
+            -PassThru -NoNewWindow `
+            -RedirectStandardError stderr.log -RedirectStandardOutput stdout.log
+          if (-not $proc.WaitForExit(5000)) {
+            $proc.Kill()
+            throw "Process did not exit within 5s; expected fail-fast on missing key."
+          }
+          if ($proc.ExitCode -ne 2) {
+            Get-Content stderr.log
+            throw "Expected exit code 2 (missing XAI_API_KEY), got $($proc.ExitCode)."
+          }

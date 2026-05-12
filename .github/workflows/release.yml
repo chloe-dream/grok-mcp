@@ -21,6 +21,10 @@ jobs:
           cache: true
           cache-dependency-path: "**/*.csproj"
 
+      - name: dotnet test
+        shell: pwsh
+        run: dotnet test tests/GrokMcp.Tests/GrokMcp.Tests.csproj -c Release --logger "console;verbosity=normal"
+
       - name: Install Inno Setup
         shell: pwsh
         run: |

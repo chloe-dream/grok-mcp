@@ -58,7 +58,7 @@ public class GrokOptions
 
     // Reads KEY=VALUE lines into process env. Caller orders files by priority; this method
     // skips any key that already exists in env, so a higher-priority source is preserved.
-    private static void LoadEnvFile(string path)
+    internal static void LoadEnvFile(string path)
     {
         if (!System.IO.File.Exists(path)) return;
         foreach (var raw in System.IO.File.ReadAllLines(path))

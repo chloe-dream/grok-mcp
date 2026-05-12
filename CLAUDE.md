@@ -16,7 +16,15 @@ Pipeline: `dotnet publish -c Release -o bin\win-x64` (single-file `grok-mcp.exe`
 
 The installer is end-to-end one-shot: a custom wizard page asks for `XAI_API_KEY` (skipped if `config.env` already has one), writes `%LOCALAPPDATA%\grok-mcp\config.env`, drops `grok-mcp.exe` into `%LOCALAPPDATA%\Programs\grok-mcp\`, registers the `grok-mcp-server` Scheduled Task (on-logon, auto-restart on crash), bounces the service so the new key is loaded, and registers the MCP with Claude Code via `claude mcp add grok --scope user --transport http ...` (silently no-ops if the CLI isn't on PATH). Plain user-scope install (`PrivilegesRequired=lowest`, no UAC). The final wizard page reports what was done.
 
-There is no test project, no linter, no CI yet. Verification is manual via the smoke tests in `README.md`.
+Unit tests live in `tests/GrokMcp.Tests/` (xUnit) and cover the pure-logic services: `ImageWriter`, `ImageInputResolver`, `ChatSessionStore`, and `GrokOptions.LoadEnvFile`. Run with:
+
+```powershell
+dotnet test tests\GrokMcp.Tests\GrokMcp.Tests.csproj
+```
+
+CI (`.github/workflows/build.yml`) runs these on every push to `main` and every PR; the release workflow runs them before cutting an installer. The HTTP layer and xAI integration are still verified manually via the smoke tests in `README.md` — no recorded fixtures or live-API contract tests yet. No linter.
+
+`GrokMcp.csproj` excludes `tests\**` from its compile glob (the test files would otherwise be sucked into the main assembly because the SDK's default `**/*.cs` pattern matches them). `InternalsVisibleTo("GrokMcp.Tests")` lets tests reach `internal` members like `GrokOptions.LoadEnvFile`.
 
 ## Hot reload during development
 

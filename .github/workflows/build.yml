@@ -19,6 +19,10 @@ jobs:
           cache: true
           cache-dependency-path: "**/*.csproj"
 
+      - name: dotnet test
+        shell: pwsh
+        run: dotnet test tests/GrokMcp.Tests/GrokMcp.Tests.csproj -c Release --logger "console;verbosity=normal"
+
       - name: dotnet publish
         shell: pwsh
         run: dotnet publish GrokMcp.csproj -c Release -o bin\win-x64

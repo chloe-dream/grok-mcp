@@ -93,6 +93,18 @@ powershell.exe -ExecutionPolicy Bypass -File scripts\dev-update.ps1
 
 The script stops the Scheduled Task, waits for the process to release `grok-mcp.exe`, `dotnet publish`-es straight into the install directory, and starts the task again. The end-to-end cycle is typically under 5 seconds.
 
+## Tests
+
+Unit tests live in `tests\GrokMcp.Tests\` (xUnit) and cover the pure-logic services plus the HTTP and tool layers with a mocked `HttpMessageHandler`:
+
+```powershell
+dotnet test tests\GrokMcp.Tests\GrokMcp.Tests.csproj
+```
+
+CI (`.github\workflows\build.yml`) runs `dotnet format --verify-no-changes`, `dotnet test`, and a publish-and-boot smoke on every push to `main` and every PR. The release workflow runs the same tests before building the installer, so a red test blocks both a merge and a release.
+
+Tests do not hit the xAI API — that surface is still verified manually via the smoke tests below.
+
 ## Smoke tests
 
 After install, in a fresh Claude Code session with the MCP wired up:
@@ -117,6 +129,7 @@ grok-mcp\
 │   ├── ImageInputResolver.cs (URL / path / data-URI / base64 → data URI)
 │   └── ImageWriter.cs        (resolve path, write bytes, return paths)
 ├── Tools\GrokTools.cs        (the 4 [McpServerTool] methods)
+├── tests\GrokMcp.Tests\      (xUnit — services, GrokClient, GrokTools)
 ├── installer\                (Inno Setup script + companion PowerShell)
 └── scripts\                  (developer helpers — dev-update.ps1)
 ```

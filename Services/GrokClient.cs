@@ -10,7 +10,9 @@ namespace GrokMcp.Services;
 
 public class GrokClient
 {
-    private static readonly TimeSpan[] _retryDelays =
+    // Per-instance and internal-settable so tests can zero-out the wall-clock delays.
+    // Production: every GrokClient instance starts with the same [0s, 2s, 6s] schedule.
+    internal TimeSpan[] _retryDelays =
     {
         TimeSpan.Zero,
         TimeSpan.FromSeconds(2),

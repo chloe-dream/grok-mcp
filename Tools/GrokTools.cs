@@ -34,7 +34,7 @@ public class GrokTools
         "Pass session_id to enable an in-memory thread that persists for the lifetime of this server process; " +
         "the same session_id on subsequent calls appends to and replays prior turns. " +
         "Returns the assistant text only.")]
-    public async Task<string> GrokChat(
+    public async Task<CallToolResult> GrokChat(
         [Description("User message (required).")] string message,
         [Description("Optional system prompt prepended to the conversation. On a session, replaces any prior system prompt.")] string? system = null,
         [Description("Model override. Defaults to grok-3-mini (fast). Use grok-4-latest for heavy/creative work.")] string? model = null,
@@ -44,36 +44,44 @@ public class GrokTools
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(message))
-            throw new ArgumentException("message must not be empty.", nameof(message));
+            return Error("message must not be empty.");
 
-        var messages = new List<object>();
-
-        if (!string.IsNullOrEmpty(session_id))
+        try
         {
-            if (reset_session) _sessions.Reset(session_id);
+            var messages = new List<object>();
 
+            if (!string.IsNullOrEmpty(session_id))
+            {
+                if (reset_session) _sessions.Reset(session_id);
+
+                if (!string.IsNullOrWhiteSpace(system))
+                    messages.Add(new { role = "system", content = system });
+
+                foreach (var turn in _sessions.Snapshot(session_id))
+                    messages.Add(new { role = turn.Role, content = turn.Content });
+
+                messages.Add(new { role = "user", content = message });
+
+                var result = await _grok.ChatAsync(messages, model, temperature, ct);
+
+                _sessions.Append(session_id, new ChatTurn("user", message));
+                _sessions.Append(session_id, new ChatTurn("assistant", result.Content));
+                return Text(result.Content);
+            }
+
+            // Stateless single-shot
             if (!string.IsNullOrWhiteSpace(system))
                 messages.Add(new { role = "system", content = system });
-
-            foreach (var turn in _sessions.Snapshot(session_id))
-                messages.Add(new { role = turn.Role, content = turn.Content });
-
             messages.Add(new { role = "user", content = message });
 
-            var result = await _grok.ChatAsync(messages, model, temperature, ct);
-
-            _sessions.Append(session_id, new ChatTurn("user", message));
-            _sessions.Append(session_id, new ChatTurn("assistant", result.Content));
-            return result.Content;
+            var oneShot = await _grok.ChatAsync(messages, model, temperature, ct);
+            return Text(oneShot.Content);
         }
-
-        // Stateless single-shot
-        if (!string.IsNullOrWhiteSpace(system))
-            messages.Add(new { role = "system", content = system });
-        messages.Add(new { role = "user", content = message });
-
-        var oneShot = await _grok.ChatAsync(messages, model, temperature, ct);
-        return oneShot.Content;
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "grok_chat failed");
+            return Error($"Chat failed: {ex.Message}");
+        }
     }
 
     [McpServerTool(Name = "grok_generate_image"), Description(
@@ -145,7 +153,7 @@ public class GrokTools
         "Vision: ask Grok to describe / analyze one or more images. " +
         "Inputs follow the same resolution rules as grok_edit_image (URL / absolute path / data URI / raw base64). " +
         "Returns plain text.")]
-    public async Task<string> GrokDescribeImage(
+    public async Task<CallToolResult> GrokDescribeImage(
         [Description("The question or instruction (e.g. 'Describe this image', 'Read the text', 'What style is this art in?'). Required.")] string prompt,
         [Description("One or more images to analyze. Required.")] string[] images,
         [Description("Vision-capable model. Defaults to grok-4-latest.")] string? model = null,
@@ -154,12 +162,21 @@ public class GrokTools
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(prompt))
-            throw new ArgumentException("prompt must not be empty.", nameof(prompt));
+            return Error("prompt must not be empty.");
         if (images == null || images.Length == 0)
-            throw new ArgumentException("images must contain at least one entry.", nameof(images));
+            return Error("images must contain at least one entry.");
 
-        var resolved = images.Select(_imgResolver.Resolve).ToList();
-        return await _grok.VisionAsync(prompt, resolved, model, detail, temperature, ct);
+        try
+        {
+            var resolved = images.Select(_imgResolver.Resolve).ToList();
+            var text = await _grok.VisionAsync(prompt, resolved, model, detail, temperature, ct);
+            return Text(text);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "grok_describe_image failed");
+            return Error($"Describe failed: {ex.Message}");
+        }
     }
 
     private CallToolResult SaveAndPackage(string outputPath, IReadOnlyList<byte[]> bytesList)
@@ -178,6 +195,15 @@ public class GrokTools
         }
 
         return new CallToolResult { Content = content, IsError = false };
+    }
+
+    private static CallToolResult Text(string text)
+    {
+        return new CallToolResult
+        {
+            Content = new List<ContentBlock> { new TextContentBlock { Text = text } },
+            IsError = false,
+        };
     }
 
     private static CallToolResult Error(string message)

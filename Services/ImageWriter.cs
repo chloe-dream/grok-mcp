@@ -4,6 +4,11 @@ namespace GrokMcp.Services;
 
 public class ImageWriter
 {
+    private static readonly HashSet<string> KnownImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp"
+    };
+
     public record SavedImage(string Path, byte[] Bytes);
 
     public List<SavedImage> WriteAll(string outputPath, IReadOnlyList<byte[]> images)
@@ -46,12 +51,20 @@ public class ImageWriter
         return results;
     }
 
-    // Append the format's true extension if the path doesn't already end in it.
-    // Pattern matches gzip/tar: user-typed name is preserved, real format trails.
+    // Make the on-disk extension reflect the real bytes.
+    // - matching ext → keep as-is
+    // - mismatched but known image ext (e.g. .png on JPG bytes) → replace
+    // - no ext or unknown ext → append the real one
     private static string EnsureExtension(string path, string? detected)
     {
         if (detected is null) return path;
-        return path.EndsWith(detected, StringComparison.OrdinalIgnoreCase) ? path : path + detected;
+        if (path.EndsWith(detected, StringComparison.OrdinalIgnoreCase)) return path;
+
+        var currentExt = Path.GetExtension(path);
+        if (!string.IsNullOrEmpty(currentExt) && KnownImageExtensions.Contains(currentExt))
+            return Path.ChangeExtension(path, detected);
+
+        return path + detected;
     }
 
     // Return the file extension implied by the bytes' magic header, or null if unrecognized.

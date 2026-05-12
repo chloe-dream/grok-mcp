@@ -38,7 +38,7 @@ There is intentionally no `BuildWatcher` or shadow-copy launcher. The Scheduled 
 
 - **`Services\ImageInputResolver.cs`** — Normalizes four input shapes (`http(s)://`, `data:`, absolute file path, raw base64) into `{ url = "data:...;base64,..." }` objects for xAI's `image_url` content blocks.
 
-- **`Services\ImageWriter.cs`** — Writes bytes to `output_path`. Enforces absolute paths (the MCP's CWD is not the agent's CWD — this is a real bug source). Sniffs PNG/JPG/GIF/WebP magic bytes and **appends** the true extension if the user-typed name doesn't already end in it. For `n>1`, indexes go before the extension.
+- **`Services\ImageWriter.cs`** — Writes bytes to `output_path`. Enforces absolute paths (the MCP's CWD is not the agent's CWD — this is a real bug source). Sniffs PNG/JPG/GIF/WebP magic bytes and reconciles the extension: matching → kept; mismatched but known image ext (`watch.png` + JPG bytes) → **replaced** (`watch.jpg`); no ext / unknown ext → real one **appended**. For `n>1`, indexes go before the extension.
 
 - **`Services\ChatSessionStore.cs`** — In-memory only. `ConcurrentDictionary<string, List<ChatTurn>>` keyed by `session_id`. With HTTP transport the server is a singleton process, so a `session_id` used by Claude Code session A is visible to Claude Code session B. Lifetime = server process. FIFO trim at `GROK_MCP_SESSION_CAP` turns.
 

@@ -228,17 +228,20 @@ history is dropped before this turn runs.
 
 These are real, observed quirks. Read them before using the tools in anger.
 
-### Image output extension can be appended, not replaced
+### Image output extension is reconciled with the real bytes
 
-The server sniffs the actual bytes (PNG/JPG/GIF/WebP magic). If your `output_path`
-ends in an extension that does **not** match the real format, the true extension
-is **appended**, producing names like `watch-movement.png.jpg`.
+The server sniffs the bytes (PNG/JPG/GIF/WebP magic) and makes the on-disk name
+match the actual format:
 
-Observed: passing `output_path = "...\\watch-movement.png"` for a generate call
-where Grok returned JPG produced `watch-movement.png.jpg` on disk.
+- Extension matches the bytes → kept as-is.
+- Known image extension that doesn't match (`watch.png` + JPG bytes) →
+  **replaced** (`watch.jpg`).
+- No extension or an unknown one → real extension **appended**.
 
-**Workaround:** use `.jpg` (current Grok image output is JPG), or omit the
-extension entirely and let the writer attach the right one.
+So passing `.png` and getting back a `.jpg` (the current Grok image output
+format) is fine — the file lands as `.jpg` on disk and the saved path in the
+tool response reflects that. Check the returned path; don't assume the file
+sits at exactly the `output_path` you sent.
 
 ### `grok_describe_image` does not detect AI-generated images
 
@@ -430,7 +433,7 @@ grok_generate_image(
   prompt = "A top-down macro photograph of a mechanical Swiss watch movement,
             exposed gears and ruby jewels, brushed steel bridges, studio
             lighting, shallow depth of field, professional product photography.",
-  output_path = "C:\\work\\watch.jpg",   // .jpg, not .png — avoids the ext footgun
+  output_path = "C:\\work\\watch.jpg",   // .jpg matches what Grok actually outputs
   aspect_ratio = "1:1"
 )
 

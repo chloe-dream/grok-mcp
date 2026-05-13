@@ -204,8 +204,8 @@ begin
     'XAI_API_KEY=' + newKey + nl +
     nl +
     '# Optional model overrides (defaults shown):' + nl +
-    '# GROK_MCP_CHAT_MODEL=grok-3-mini' + nl +
-    '# GROK_MCP_CREATIVE_MODEL=grok-4-latest' + nl +
+    '# GROK_MCP_CHAT_MODEL=grok-4.3' + nl +
+    '# GROK_MCP_CREATIVE_MODEL=grok-4.3' + nl +
     '# GROK_MCP_IMAGE_MODEL=grok-imagine-image' + nl +
     nl +
     '# Optional runtime tuning:' + nl +

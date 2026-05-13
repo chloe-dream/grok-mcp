@@ -37,14 +37,18 @@ public class GrokTools
     public async Task<CallToolResult> GrokChat(
         [Description("User message (required).")] string message,
         [Description("Optional system prompt prepended to the conversation. On a session, replaces any prior system prompt.")] string? system = null,
-        [Description("Model override. Defaults to grok-3-mini (fast). Use grok-4-latest for heavy/creative work.")] string? model = null,
+        [Description("Model override. Defaults to grok-4.3 (xAI's flagship: 1M context, vision, function calling, reasoning).")] string? model = null,
         [Description("Sampling temperature 0.0-2.0. Default 0.7.")] float temperature = 0.7f,
-        [Description("Optional session id. Same id reuses in-memory chat history within this server process. Omit for stateless one-shot.")] string? session_id = null,
+        [Description("Optional session id. Same id reuses in-memory chat history within this server process. Omit for stateless one-shot. When set, also routes to the same xAI server for prompt-prefix caching (cached input is billed at ~16% of normal).")] string? session_id = null,
         [Description("If true, clears the named session before this turn. No effect when session_id is null.")] bool reset_session = false,
+        [Description("Reasoning depth on reasoning-capable models (grok-4.3). One of 'none', 'low', 'medium', 'high'. xAI default is 'low'. Use 'none' for cheap/fast non-reasoning calls; 'high' for hard problems. Omit to let xAI default apply.")] string? reasoning_effort = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(message))
             return Error("message must not be empty.");
+        if (!string.IsNullOrWhiteSpace(reasoning_effort) &&
+            reasoning_effort is not ("none" or "low" or "medium" or "high"))
+            return Error("reasoning_effort must be one of: none, low, medium, high.");
 
         try
         {
@@ -62,7 +66,7 @@ public class GrokTools
 
                 messages.Add(new { role = "user", content = message });
 
-                var result = await _grok.ChatAsync(messages, model, temperature, ct);
+                var result = await _grok.ChatAsync(messages, model, temperature, reasoning_effort, session_id, ct);
 
                 _sessions.Append(session_id, new ChatTurn("user", message));
                 _sessions.Append(session_id, new ChatTurn("assistant", result.Content));
@@ -74,7 +78,7 @@ public class GrokTools
                 messages.Add(new { role = "system", content = system });
             messages.Add(new { role = "user", content = message });
 
-            var oneShot = await _grok.ChatAsync(messages, model, temperature, ct);
+            var oneShot = await _grok.ChatAsync(messages, model, temperature, reasoning_effort, conversationId: null, ct);
             return Text(oneShot.Content);
         }
         catch (Exception ex)
@@ -156,7 +160,7 @@ public class GrokTools
     public async Task<CallToolResult> GrokDescribeImage(
         [Description("The question or instruction (e.g. 'Describe this image', 'Read the text', 'What style is this art in?'). Required.")] string prompt,
         [Description("One or more images to analyze. Required.")] string[] images,
-        [Description("Vision-capable model. Defaults to grok-4-latest.")] string? model = null,
+        [Description("Vision-capable model. Defaults to grok-4.3.")] string? model = null,
         [Description("Detail level passed through to xAI ('low' | 'high' | 'auto'). Default 'auto'.")] string detail = "auto",
         [Description("Sampling temperature. Default 0.2 for descriptive accuracy.")] float temperature = 0.2f,
         CancellationToken ct = default)

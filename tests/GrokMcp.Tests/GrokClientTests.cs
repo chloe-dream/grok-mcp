@@ -47,6 +47,8 @@ public class GrokClientTests
             new object[] { new { role = "user", content = "hi" } },
             model: null,
             temperature: 0.7f,
+            reasoningEffort: null,
+            conversationId: null,
             CancellationToken.None);
 
         Assert.Equal("hello back", result.Content);
@@ -65,7 +67,7 @@ public class GrokClientTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => client.ChatAsync(
             new object[] { new { role = "user", content = "hi" } },
-            null, 0.7f, CancellationToken.None));
+            null, 0.7f, null, null, CancellationToken.None));
 
         Assert.Single(handler.Requests);
     }
@@ -79,7 +81,7 @@ public class GrokClientTests
 
         var result = await client.ChatAsync(
             new object[] { new { role = "user", content = "hi" } },
-            null, 0.7f, CancellationToken.None);
+            null, 0.7f, null, null, CancellationToken.None);
 
         Assert.Equal("hello back", result.Content);
         Assert.Equal(2, handler.Requests.Count);
@@ -94,7 +96,7 @@ public class GrokClientTests
 
         var result = await client.ChatAsync(
             new object[] { new { role = "user", content = "hi" } },
-            null, 0.7f, CancellationToken.None);
+            null, 0.7f, null, null, CancellationToken.None);
 
         Assert.Equal("hello back", result.Content);
         Assert.Equal(2, handler.Requests.Count);
@@ -109,7 +111,7 @@ public class GrokClientTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => client.ChatAsync(
             new object[] { new { role = "user", content = "hi" } },
-            null, 0.7f, CancellationToken.None));
+            null, 0.7f, null, null, CancellationToken.None));
 
         Assert.Contains("failed after 3 attempts", ex.Message);
         Assert.Equal(3, handler.Requests.Count);
@@ -124,10 +126,67 @@ public class GrokClientTests
 
         var result = await client.ChatAsync(
             new object[] { new { role = "user", content = "hi" } },
-            null, 0.7f, CancellationToken.None);
+            null, 0.7f, null, null, CancellationToken.None);
 
         Assert.Equal("hello back", result.Content);
         Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task ChatAsync_with_reasoning_effort_serializes_into_body()
+    {
+        var (client, handler) = Build();
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
+
+        await client.ChatAsync(
+            new object[] { new { role = "user", content = "hi" } },
+            null, 0.7f, reasoningEffort: "high", conversationId: null, CancellationToken.None);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains("\"reasoning_effort\":\"high\"", req.Body);
+    }
+
+    [Fact]
+    public async Task ChatAsync_without_reasoning_effort_omits_field()
+    {
+        var (client, handler) = Build();
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
+
+        await client.ChatAsync(
+            new object[] { new { role = "user", content = "hi" } },
+            null, 0.7f, reasoningEffort: null, conversationId: null, CancellationToken.None);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.DoesNotContain("reasoning_effort", req.Body);
+    }
+
+    [Fact]
+    public async Task ChatAsync_with_conversation_id_sets_x_grok_conv_id_header()
+    {
+        var (client, handler) = Build();
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
+
+        await client.ChatAsync(
+            new object[] { new { role = "user", content = "hi" } },
+            null, 0.7f, null, conversationId: "sess-abc-123", CancellationToken.None);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.True(req.Headers.TryGetValues("x-grok-conv-id", out var values));
+        Assert.Equal("sess-abc-123", values!.Single());
+    }
+
+    [Fact]
+    public async Task ChatAsync_without_conversation_id_does_not_set_header()
+    {
+        var (client, handler) = Build();
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
+
+        await client.ChatAsync(
+            new object[] { new { role = "user", content = "hi" } },
+            null, 0.7f, null, conversationId: null, CancellationToken.None);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.False(req.Headers.Contains("x-grok-conv-id"));
     }
 
     [Fact]

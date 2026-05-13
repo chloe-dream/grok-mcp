@@ -43,8 +43,8 @@ The server reads `config.env` files at startup. Priority (highest wins):
 | Var | Default | Purpose |
 |---|---|---|
 | `XAI_API_KEY` | — (required, fail fast) | Bearer token |
-| `GROK_MCP_CHAT_MODEL` | `grok-3-mini` | default chat model |
-| `GROK_MCP_CREATIVE_MODEL` | `grok-4-latest` | default vision/heavy model |
+| `GROK_MCP_CHAT_MODEL` | `grok-4.3` | default chat model |
+| `GROK_MCP_CREATIVE_MODEL` | `grok-4.3` | default vision/heavy model |
 | `GROK_MCP_IMAGE_MODEL` | `grok-imagine-image` | default image gen/edit model |
 | `GROK_MCP_LOG_LEVEL` | `Information` | `Trace`/`Debug`/`Information`/`Warning`/`Error` |
 | `GROK_MCP_LOG_DIR` | `%LOCALAPPDATA%\grok-mcp\logs` | rolling-file log directory |

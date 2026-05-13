@@ -40,18 +40,23 @@ public class GrokClient
         IEnumerable<object> messages,
         string? model,
         float temperature,
+        string? reasoningEffort,
+        string? conversationId,
         CancellationToken ct)
     {
         var resolvedModel = string.IsNullOrWhiteSpace(model) ? _opts.ChatModel : model;
         var msgList = messages.ToList();
-        var body = new
+        var body = new Dictionary<string, object>
         {
-            model = resolvedModel,
-            messages = msgList,
-            temperature = temperature,
+            ["model"] = resolvedModel,
+            ["messages"] = msgList,
+            ["temperature"] = temperature,
         };
+        if (!string.IsNullOrWhiteSpace(reasoningEffort))
+            body["reasoning_effort"] = reasoningEffort;
+
         var url = $"{_opts.ApiBaseUrl.TrimEnd('/')}/chat/completions";
-        return await PostChatAsync(url, body, resolvedModel, ct);
+        return await PostChatAsync(url, body, msgList, resolvedModel, conversationId, ct);
     }
 
     public async Task<string> VisionAsync(
@@ -70,15 +75,15 @@ public class GrokClient
             var url = img.GetType().GetProperty("url")!.GetValue(img)!;
             content.Add(new { type = "image_url", image_url = new { url, detail } });
         }
-        var messages = new[] { new { role = "user", content = content } };
-        var body = new
+        var messages = new object[] { new { role = "user", content = content } };
+        var body = new Dictionary<string, object>
         {
-            model = resolvedModel,
-            messages = messages,
-            temperature = temperature,
+            ["model"] = resolvedModel,
+            ["messages"] = messages,
+            ["temperature"] = temperature,
         };
         var endpoint = $"{_opts.ApiBaseUrl.TrimEnd('/')}/chat/completions";
-        var result = await PostChatAsync(endpoint, body, resolvedModel, ct);
+        var result = await PostChatAsync(endpoint, body, messages, resolvedModel, conversationId: null, ct);
         return result.Content;
     }
 
@@ -118,7 +123,7 @@ public class GrokClient
             ? $"{_opts.ApiBaseUrl.TrimEnd('/')}/images/edits"
             : $"{_opts.ApiBaseUrl.TrimEnd('/')}/images/generations";
 
-        var json = await PostWithRetryAsync(endpoint, body, resolvedModel, prompt, ct);
+        var json = await PostWithRetryAsync(endpoint, body, resolvedModel, prompt, conversationId: null, ct);
 
         using var doc = JsonDocument.Parse(json);
         var data = doc.RootElement.GetProperty("data");
@@ -139,10 +144,16 @@ public class GrokClient
         return results;
     }
 
-    private async Task<ChatResult> PostChatAsync(string endpoint, object body, string model, CancellationToken ct)
+    private async Task<ChatResult> PostChatAsync(
+        string endpoint,
+        object body,
+        IEnumerable<object> messages,
+        string model,
+        string? conversationId,
+        CancellationToken ct)
     {
-        var promptPreview = TryExtractFirstUserText(body);
-        var json = await PostWithRetryAsync(endpoint, body, model, promptPreview, ct);
+        var promptPreview = TryExtractFirstUserText(messages);
+        var json = await PostWithRetryAsync(endpoint, body, model, promptPreview, conversationId, ct);
 
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -171,6 +182,7 @@ public class GrokClient
         object body,
         string model,
         string promptPreview,
+        string? conversationId,
         CancellationToken ct)
     {
         Exception? lastEx = null;
@@ -190,6 +202,11 @@ public class GrokClient
                 Content = new StringContent(requestJson, Encoding.UTF8, "application/json"),
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opts.ApiKey);
+            // Sticky-route to the same xAI server so the prompt-prefix cache hits across turns
+            // (cached input ≈ 1/6 the price of normal input on grok-4.3). Header documented in
+            // https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits
+            if (!string.IsNullOrEmpty(conversationId))
+                request.Headers.Add("x-grok-conv-id", conversationId);
 
             HttpResponseMessage response;
             string responseBody;
@@ -226,13 +243,11 @@ public class GrokClient
             lastEx);
     }
 
-    private static string TryExtractFirstUserText(object body)
+    private static string TryExtractFirstUserText(IEnumerable<object> messages)
     {
         try
         {
-            var msgs = body.GetType().GetProperty("messages")?.GetValue(body) as System.Collections.IEnumerable;
-            if (msgs == null) return "";
-            foreach (var m in msgs)
+            foreach (var m in messages)
             {
                 var role = m.GetType().GetProperty("role")?.GetValue(m) as string;
                 if (role != "user") continue;

@@ -14,8 +14,8 @@ below was observed, not assumed.
 |---|---|---|
 | User wants a generated image (mockup, hero art, placeholder asset) | `grok_generate_image` | Claude cannot generate raster images. Grok can. |
 | User wants an existing image transformed (recolor, restyle, composite) | `grok_edit_image` | Same — image→image is impossible without an external model. |
-| User uploads a screenshot, diagram, or photo and asks what's in it (deep vision, not just OCR) | `grok_describe_image` | Defaults to `grok-4-latest`, returns plain text — easy to chain. |
-| User asks for a design / architecture review and Claude wrote the design | `grok_chat` (model `grok-4-latest`) | Independent second opinion. Grok has not seen the prior reasoning, so it pushes back instead of rationalising. |
+| User uploads a screenshot, diagram, or photo and asks what's in it (deep vision, not just OCR) | `grok_describe_image` | Defaults to `grok-4.3`, returns plain text — easy to chain. |
+| User asks for a design / architecture review and Claude wrote the design | `grok_chat` with `reasoning_effort = "high"` | Independent second opinion. Grok has not seen the prior reasoning, so it pushes back instead of rationalising. |
 | Claude is uncertain about a fundamental technical claim and risks confabulating | `grok_chat` | Fact-check, devil's advocate, sycophancy-resistant sanity check. |
 | User has a long, throwaway processing task that would bloat Claude's context | `grok_chat` with a `session_id` | Offload to Grok's process memory, pull back only the conclusion. |
 
@@ -92,19 +92,26 @@ You get clean numbered answers back that are easy to act on.
 ```
 grok_chat(
   message = "<the question>",
-  model = "grok-3-mini" | "grok-4-latest",             // mini default; use latest for review
+  model = "grok-4.3",                                  // default — no need to set
+  reasoning_effort = "none" | "low" | "medium" | "high",  // omit → xAI default ("low")
   temperature = 0.3                                    // lower for review/factual, higher for ideation
 )
 ```
 
-`grok-3-mini` is the default — fast, terse, good for quick lookups and yes/no
-checks. Switch to `grok-4-latest` when you need depth (architecture review,
-multi-step reasoning, vision).
+The default is `grok-4.3` — xAI's flagship: 1M context, function calling,
+vision, configurable reasoning. Tune `reasoning_effort`:
+
+- `"none"` — skip reasoning entirely. Fastest and cheapest; use for short
+  lookups, yes/no checks, simple rewrites.
+- `"low"` (xAI default) — baseline reasoning. Good for general chat.
+- `"medium"` — extra deliberation. Use for code-review and design questions.
+- `"high"` — deepest reasoning. Reserve for hard problems (architecture
+  critique, tricky maths, sycophancy-resistant analysis).
 
 ### 5. Chat — second-opinion / design review
 
 When asking for a critical review, **invite criticism explicitly** in the
-prompt. Grok-4 will give a structured push-back when prompted to be critical;
+prompt. Grok-4.3 will give a structured push-back when prompted to be critical;
 without that framing it tends toward "here are several considerations…":
 
 ```
@@ -116,7 +123,7 @@ Be critical: what real problems and footguns do you see? Where would you
 disagree with this design? Propose a concrete alternative if you have one. No
 generic 'it depends' answers — be specific.
 """,
-  model = "grok-4-latest",
+  reasoning_effort = "high",
   temperature = 0.3
 )
 ```
@@ -210,7 +217,7 @@ role: code reviewer, security auditor, sceptical PM, devil's advocate.
 grok_chat(
   message = "<the actual question>",
   system  = "<sharp persona + output-shape constraints>",
-  model   = "grok-4-latest",
+  reasoning_effort = "medium",
   temperature = 0.3
 )
 ```
@@ -272,12 +279,12 @@ the current process lifetime, not for persistence.
 
 ### Knowledge cutoff lags real time
 
-Grok-3-mini self-reported a training cutoff in the 2023–2024 range during a
-sycophancy-resistance test. It happily pushed back on a wrong premise about
-HTTP/2 Server Push and named the Chrome 106 (2022) deprecation correctly — so
-**fundamentals are reliable**. But for **current package versions, newest API
-features, or month-old releases, verify against primary sources** rather than
-trusting Grok.
+Grok's training cutoff lags real time by several months — fundamentals are
+reliable, but for **current package versions, newest API features, or
+month-old releases, verify against primary sources** rather than trusting
+Grok's recollection. (Historical: this footgun was first observed in a
+sycophancy-resistance test when the default was `grok-3-mini` with a
+2023–2024 cutoff. `grok-4.3` is newer but the principle stands.)
 
 ### `output_path` must be absolute
 
@@ -410,17 +417,32 @@ server is loopback-only and the API key is never logged, but the prompts and
 image bytes themselves leave the box. Do not paste secrets, credentials,
 unredacted customer data, or NDA-covered material into Grok prompts.
 
-## Model selection cheat sheet
+## Model & reasoning-effort cheat sheet
 
-| Task | Model | Why |
-|---|---|---|
-| Quick fact, yes/no, short rephrase | `grok-3-mini` (default) | Fast, cheap, terse. |
-| Design review, architecture critique, deep reasoning | `grok-4-latest` | Structured, multi-section output. |
-| Vision (describe, OCR-like, diagram reading) | `grok-4-latest` (default for vision) | The vision-capable model. |
-| Image gen / edit | `grok-imagine-image` (default) | The only image model exposed. |
+Chat and vision both run on `grok-4.3` (default). The shape of the answer is
+controlled by `reasoning_effort` on `grok_chat`, not by swapping models.
 
-Override the model per call (`model = "..."`) instead of changing the server
-default — the defaults are user-configured for a reason.
+| Task | Tool | `reasoning_effort` | Why |
+|---|---|---|---|
+| Quick fact, yes/no, short rephrase | `grok_chat` | `"none"` | Skip reasoning — fastest and cheapest. |
+| General chat, casual question | `grok_chat` | omit (xAI default `"low"`) | Baseline reasoning, sensible defaults. |
+| Code review, technical critique | `grok_chat` | `"medium"` | Extra deliberation for non-trivial calls. |
+| Design review, architecture critique, hard reasoning | `grok_chat` | `"high"` | Deepest reasoning — structured push-back. |
+| Vision (describe, OCR-like, diagram reading) | `grok_describe_image` | n/a | grok-4.3 is the vision-capable model. |
+| Image gen / edit | `grok_generate_image` / `grok_edit_image` | n/a | `grok-imagine-image` is the only image model exposed. |
+
+Pass `reasoning_effort` per call rather than changing the server default. The
+server-side default is "let xAI decide" (currently `"low"`), which is right
+for most chat.
+
+### Session prompt-prefix caching
+
+When you pass a `session_id`, the server attaches an `x-grok-conv-id` header
+so xAI routes the request to the same backend. Repeat-prefix tokens then bill
+at the **cached rate (`$0.20/M` input, ~16% of normal)** instead of the
+full `$1.25/M`. Practical implication: long-lived `session_id`-chats with a
+shared system prompt and growing history are dramatically cheaper than
+stateless one-shots that re-send the same context every turn.
 
 ## A complete worked example
 

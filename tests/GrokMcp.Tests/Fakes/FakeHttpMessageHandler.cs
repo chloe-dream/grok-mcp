@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 
 namespace GrokMcp.Tests.Fakes;
 
@@ -11,7 +12,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 
     public List<Recorded> Requests { get; } = new();
 
-    public sealed record Recorded(HttpMethod Method, Uri Uri, string Body);
+    public sealed record Recorded(HttpMethod Method, Uri Uri, string Body, HttpRequestHeaders Headers);
 
     public void EnqueueJson(HttpStatusCode status, string body)
     {
@@ -37,7 +38,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var body = request.Content == null ? "" : await request.Content.ReadAsStringAsync(ct);
-        Requests.Add(new Recorded(request.Method, request.RequestUri!, body));
+        Requests.Add(new Recorded(request.Method, request.RequestUri!, body, request.Headers));
 
         if (_responders.Count == 0)
             throw new InvalidOperationException(

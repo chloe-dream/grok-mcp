@@ -6,8 +6,8 @@ public class GrokOptions
 {
     public string ApiKey { get; set; } = "";
     public string ApiBaseUrl { get; set; } = "https://api.x.ai/v1";
-    public string ChatModel { get; set; } = "grok-3-mini";
-    public string CreativeModel { get; set; } = "grok-4-latest";
+    public string ChatModel { get; set; } = "grok-4.3";
+    public string CreativeModel { get; set; } = "grok-4.3";
     public string ImageModel { get; set; } = "grok-imagine-image";
     public int HttpTimeoutSeconds { get; set; } = 300;
     public int SessionTurnCap { get; set; } = 50;

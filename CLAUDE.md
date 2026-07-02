@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local **HTTP** MCP server (.NET 10, C#, ASP.NET Core) that wraps the xAI Grok REST API. Exposes four tools to Claude Code: `grok_chat`, `grok_generate_image`, `grok_edit_image`, `grok_describe_image`. One background process binds to `http://127.0.0.1:6677` and serves many parallel Claude Code clients — loopback only, no auth.
+A local **HTTP** MCP server (.NET 10, C#, ASP.NET Core) that wraps the xAI Grok REST API. Exposes five tools to Claude Code: `grok_chat`, `grok_generate_image`, `grok_edit_image`, `grok_describe_image`, `grok_generate_video`. One background process binds to `http://127.0.0.1:6677` and serves many parallel Claude Code clients — loopback only, no auth.
 
 ## Build & install
 
@@ -40,13 +40,13 @@ There is intentionally no `BuildWatcher` or shadow-copy launcher. The Scheduled 
 
 - **`Program.cs`** — `WebApplication` host. Binds `GrokOptions` from `config.env` + env vars *before* building the DI container (logging level needs it). Fail-fast on missing `XAI_API_KEY` (exit 2). Registers MCP server with `WithHttpTransport(o => o.Stateless = true).WithToolsFromAssembly()`. Maps `/mcp` (the streamable-HTTP MCP endpoint) and `/health` (JSON probe with `pid`, `version`). Always binds to `http://127.0.0.1:6677` — loopback only.
 
-- **`Tools\GrokTools.cs`** — The four MCP tool methods. Thin wrappers that validate arguments, resolve image inputs, call `GrokClient`, and package results. Image tools return `CallToolResult` with both a `TextContentBlock` (saved-path summary) and an `ImageContentBlock` per saved image so the calling agent sees the bytes inline without re-reading the file.
+- **`Tools\GrokTools.cs`** — The five MCP tool methods. Thin wrappers that validate arguments, resolve image inputs, call `GrokClient`, and package results. Image tools return `CallToolResult` with both a `TextContentBlock` (saved-path summary) and an `ImageContentBlock` per saved image so the calling agent sees the bytes inline without re-reading the file. `grok_generate_video` returns `TextContentBlock` only — video isn't inlined.
 
-- **`Services\GrokClient.cs`** — HTTP layer to xAI. Three retry attempts at delays `[0, 2s, 6s]`. Treats HTTP 5xx and 429 as transient; 4xx breaks out of the retry loop. Generation hits `/images/generations`, edits hit `/images/edits` (presence of `inputs` decides). Vision uses `/chat/completions` with multimodal `content` arrays. Token usage logged on every chat response.
+- **`Services\GrokClient.cs`** — HTTP layer to xAI. Three retry attempts at delays `[0, 2s, 6s]`. Treats HTTP 5xx and 429 as transient; 4xx breaks out of the retry loop. Generation hits `/images/generations`, edits hit `/images/edits` (presence of `inputs` decides). Vision uses `/chat/completions` with multimodal `content` arrays. Video generation posts to `/videos/generations` (returns a `request_id` immediately) and is polled via `GET /videos/{request_id}` every 5s until `done`/`failed`/`expired`, up to a 10-minute timeout, before downloading the MP4 from `video.url`; the video model is auto-selected per call unless pinned (`grok-imagine-video-1.5` for image-to-video, `grok-imagine-video` for text-to-video — 1.5 rejects text-to-video with HTTP 400). Token usage logged on every chat response.
 
 - **`Services\ImageInputResolver.cs`** — Normalizes four input shapes (`http(s)://`, `data:`, absolute file path, raw base64) into `{ url = "data:...;base64,..." }` objects for xAI's `image_url` content blocks.
 
-- **`Services\ImageWriter.cs`** — Writes bytes to `output_path`. Enforces absolute paths (the MCP's CWD is not the agent's CWD — this is a real bug source). Sniffs PNG/JPG/GIF/WebP magic bytes and reconciles the extension: matching → kept; mismatched but known image ext (`watch.png` + JPG bytes) → **replaced** (`watch.jpg`); no ext / unknown ext → real one **appended**. For `n>1`, indexes go before the extension.
+- **`Services\ImageWriter.cs`** — Writes bytes to `output_path`. Enforces absolute paths (the MCP's CWD is not the agent's CWD — this is a real bug source). Sniffs PNG/JPG/GIF/WebP magic bytes and reconciles the extension: matching → kept; mismatched but known image ext (`watch.png` + JPG bytes) → **replaced** (`watch.jpg`); no ext / unknown ext → real one **appended**. For `n>1`, indexes go before the extension. `WriteVideo` applies the same absolute-path rule for MP4 bytes, sniffing the `ftyp` box at offset 4: `.mp4` kept, other known video extensions replaced, unknown/missing appended.
 
 - **`Services\ChatSessionStore.cs`** — In-memory only. `ConcurrentDictionary<string, List<ChatTurn>>` keyed by `session_id`. With HTTP transport the server is a singleton process, so a `session_id` used by Claude Code session A is visible to Claude Code session B. Lifetime = server process. FIFO trim at `GROK_MCP_SESSION_CAP` turns.
 

@@ -15,6 +15,7 @@ One background process, many parallel Claude Code clients. Loopback-only (127.0.
 | `grok_generate_image` | Text → image, saved to `output_path` and returned inline so Claude sees it. |
 | `grok_edit_image` | Input image(s) + prompt → modified image, same output handling. |
 | `grok_describe_image` | Vision: ask Grok to analyze image(s). Returns text. |
+| `grok_generate_video` | Text (+ optional seed image) → video, saved to `output_path` as MP4. Generation is asynchronous on xAI's side — the call polls until done and can block for minutes. Text-only result (no inline preview). |
 
 `output_path` on the image tools must be **absolute** — Claude Code's working directory is not the server's working directory. For `n>1`, the index is inserted before the extension (`mushroom.png` → `mushroom-1.png`, `mushroom-2.png`, …). Image-input parameters accept any of: `https://…` URL, absolute file path, `data:image/...;base64,…` URI, or raw base64.
 
@@ -26,7 +27,7 @@ One background process, many parallel Claude Code clients. Loopback-only (127.0.
    - Install to `%LOCALAPPDATA%\Programs\grok-mcp\` (no UAC).
    - Register a Scheduled Task that starts the server on every logon and auto-restarts on crash.
    - Register the MCP with Claude Code (`user` scope) — if the `claude` CLI is on PATH.
-3. Open any Claude Code session — `/mcp` should show `grok` connected with 4 tools.
+3. Open any Claude Code session — `/mcp` should show `grok` connected with 5 tools.
 
 Re-running the installer is safe: an existing `config.env` is preserved and the service is bounced to pick up the new build.
 
@@ -46,6 +47,7 @@ The server reads `config.env` files at startup. Priority (highest wins):
 | `GROK_MCP_CHAT_MODEL` | `grok-4.3` | default chat model |
 | `GROK_MCP_CREATIVE_MODEL` | `grok-4.3` | default vision/heavy model |
 | `GROK_MCP_IMAGE_MODEL` | `grok-imagine-image` | default image gen/edit model |
+| `GROK_MCP_VIDEO_MODEL` | (auto) | pin video model; default auto-selects `grok-imagine-video-1.5` (image-to-video) / `grok-imagine-video` (text-to-video) |
 | `GROK_MCP_LOG_LEVEL` | `Information` | `Trace`/`Debug`/`Information`/`Warning`/`Error` |
 | `GROK_MCP_LOG_DIR` | `%LOCALAPPDATA%\grok-mcp\logs` | rolling-file log directory |
 | `GROK_MCP_HTTP_TIMEOUT_SEC` | `300` | HttpClient timeout |
@@ -109,12 +111,13 @@ Tests do not hit the xAI API — that surface is still verified manually via the
 
 After install, in a fresh Claude Code session with the MCP wired up:
 
-1. `/mcp` — `grok` connected, 4 tools listed.
+1. `/mcp` — `grok` connected, 5 tools listed.
 2. *"Use grok_chat to greet me in five languages."* Expect <2s round-trip; log shows token usage.
 3. *"Use grok_chat with session_id='test1' to remember my name is Chloe. Then in a separate call with the same session_id ask what my name is."* Expect "Chloe". This works **across different Claude Code sessions** now — try it with two terminal windows open.
 4. *"Use grok_generate_image with prompt='a tiny pixel-art mushroom on transparent background' and output_path='C:\\Users\\you\\Desktop\\grok-test\\mushroom.png'."* Expect the file on disk + Claude can describe the inline image without re-reading it.
 5. *"Use grok_edit_image with images=['…\\mushroom.png'], prompt='now make it a glowing crystal mushroom', output_path='…\\crystal.png'."* Expect a recognizably-derived new image.
 6. *"Use grok_describe_image on `crystal.png` and tell me its color palette."* Expect coherent description.
+7. *"Use grok_generate_video with prompt='a tiny pixel-art mushroom slowly rotating', duration=1, resolution='480p', output_path='C:\\Users\\you\\Desktop\\grok-test\\mushroom.mp4'."* Keep it short (1s / 480p) — this can still take a minute or more to complete and spends real API credit. Expect an MP4 on disk.
 
 ## Project layout
 
@@ -128,7 +131,7 @@ grok-mcp\
 │   ├── ChatSessionStore.cs   (in-memory session history, shared across HTTP clients)
 │   ├── ImageInputResolver.cs (URL / path / data-URI / base64 → data URI)
 │   └── ImageWriter.cs        (resolve path, write bytes, return paths)
-├── Tools\GrokTools.cs        (the 4 [McpServerTool] methods)
+├── Tools\GrokTools.cs        (the 5 [McpServerTool] methods)
 ├── tests\GrokMcp.Tests\      (xUnit — services, GrokClient, GrokTools)
 ├── installer\                (Inno Setup script + companion PowerShell)
 └── scripts\                  (developer helpers — dev-update.ps1)
@@ -146,6 +149,6 @@ Each Grok call logs the model, attempt, payload size, prompt preview (≤100 cha
 ## Troubleshooting
 
 - **`/mcp` shows red / disconnected.** First check `Invoke-WebRequest http://127.0.0.1:6677/health`. If that fails, the server isn't running — `Get-ScheduledTask -TaskName grok-mcp-server` should show `State: Ready` or `Running`. If `State: Disabled` or the task is missing, re-run the installer.
-- **`HTTP 400 model not found` from a tool call.** xAI deprecates legacy aliases periodically. Set `GROK_MCP_CHAT_MODEL` / `GROK_MCP_CREATIVE_MODEL` / `GROK_MCP_IMAGE_MODEL` in `config.env` to the current model id from the xAI console and restart the task.
+- **`HTTP 400 model not found` from a tool call.** xAI deprecates legacy aliases periodically. Set `GROK_MCP_CHAT_MODEL` / `GROK_MCP_CREATIVE_MODEL` / `GROK_MCP_IMAGE_MODEL` / `GROK_MCP_VIDEO_MODEL` in `config.env` to the current model id from the xAI console and restart the task.
 - **`output_path must be absolute`.** Claude Code's working directory is not the server's working directory. Always pass a full path.
 - **Port 6677 already in use.** Set `GROK_MCP_PORT` in `config.env` to a free port (e.g. `GROK_MCP_PORT=6688`), bounce the task, and re-register the MCP URL with Claude Code (`claude mcp remove grok --scope user; claude mcp add grok --scope user --transport http http://127.0.0.1:6688/mcp`).

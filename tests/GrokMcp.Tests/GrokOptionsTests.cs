@@ -64,6 +64,26 @@ public class GrokOptionsTests : IDisposable
     }
 
     [Fact]
+    public void VideoModel_default_is_empty_meaning_auto_select_per_call()
+    {
+        var o = new GrokOptions();
+        Assert.Equal("", o.VideoModel);
+    }
+
+    [Fact]
+    public void BindFromEnvironment_reads_GROK_MCP_VIDEO_MODEL_override()
+    {
+        const string key = "GROK_MCP_VIDEO_MODEL";
+        Environment.SetEnvironmentVariable(key, "custom-video-model");
+        Track(key);
+
+        var o = new GrokOptions();
+        GrokOptions.BindFromEnvironment(o);
+
+        Assert.Equal("custom-video-model", o.VideoModel);
+    }
+
+    [Fact]
     public void LoadEnvFile_does_not_overwrite_existing_env_var()
     {
         var key = _prefix + "P1";

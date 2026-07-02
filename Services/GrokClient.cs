@@ -19,6 +19,11 @@ public class GrokClient
         TimeSpan.FromSeconds(6),
     };
 
+    // Same rationale as _retryDelays: internal-settable so tests can shrink the video poll
+    // loop instead of waiting on the real wall clock. Production: poll every 5s, give up after 10min.
+    internal TimeSpan _videoPollInterval = TimeSpan.FromSeconds(5);
+    internal TimeSpan _videoPollTimeout = TimeSpan.FromMinutes(10);
+
     private readonly HttpClient _http;
     private readonly GrokOptions _opts;
     private readonly ILogger<GrokClient> _log;
@@ -94,6 +99,7 @@ public class GrokClient
         string? model,
         int n,
         string? aspectRatio,
+        string? resolution,
         string responseFormat,
         IReadOnlyList<object>? inputs,
         CancellationToken ct)
@@ -110,6 +116,8 @@ public class GrokClient
         };
         if (!string.IsNullOrWhiteSpace(aspectRatio))
             body["aspect_ratio"] = aspectRatio;
+        if (!string.IsNullOrWhiteSpace(resolution))
+            body["resolution"] = resolution;
 
         if (hasInputs)
         {
@@ -142,6 +150,122 @@ public class GrokClient
             }
         }
         return results;
+    }
+
+    public record VideoResult(byte[] Bytes, int? DurationSeconds);
+
+    public async Task<VideoResult> VideosAsync(
+        string prompt,
+        string? model,
+        int duration,
+        string? aspectRatio,
+        string? resolution,
+        object? imageInput,
+        CancellationToken ct)
+    {
+        // Priority: explicit per-call model → GROK_MCP_VIDEO_MODEL pin → auto-select by mode.
+        // Auto-select is mode-dependent because grok-imagine-video-1.5 rejects text-to-video
+        // with HTTP 400 "Text-to-video is not supported for this model" (live-verified 2026-07-02);
+        // the older grok-imagine-video handles text-to-video fine.
+        var resolvedModel = !string.IsNullOrWhiteSpace(model) ? model
+            : !string.IsNullOrWhiteSpace(_opts.VideoModel) ? _opts.VideoModel
+            : imageInput != null ? "grok-imagine-video-1.5"
+            : "grok-imagine-video";
+
+        var body = new Dictionary<string, object>
+        {
+            ["model"] = resolvedModel,
+            ["prompt"] = prompt,
+            ["duration"] = duration,
+        };
+        if (!string.IsNullOrWhiteSpace(aspectRatio))
+            body["aspect_ratio"] = aspectRatio;
+        if (!string.IsNullOrWhiteSpace(resolution))
+            body["resolution"] = resolution;
+        if (imageInput != null)
+            body["image"] = imageInput;
+
+        var endpoint = $"{_opts.ApiBaseUrl.TrimEnd('/')}/videos/generations";
+        var json = await PostWithRetryAsync(endpoint, body, resolvedModel, prompt, conversationId: null, ct);
+
+        using var startDoc = JsonDocument.Parse(json);
+        var requestId = startDoc.RootElement.TryGetProperty("request_id", out var reqIdProp)
+            ? reqIdProp.GetString()
+            : null;
+        if (string.IsNullOrEmpty(requestId))
+            throw new InvalidOperationException("Grok video request did not return a request_id.");
+
+        var pollUrl = $"{_opts.ApiBaseUrl.TrimEnd('/')}/videos/{requestId}";
+        var deadline = DateTime.UtcNow + _videoPollTimeout;
+
+        while (true)
+        {
+            await Task.Delay(_videoPollInterval, ct);
+
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException(
+                    $"Grok video generation timed out after {_videoPollTimeout.TotalMinutes:0} minutes (request_id={requestId}).");
+
+            string pollBody;
+            try
+            {
+                pollBody = await GetWithAuthAsync(pollUrl, ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException)
+            {
+                if (ct.IsCancellationRequested) throw;
+                // Individual poll failures aren't fatal — xAI's own poll example just retries
+                // every 5s until done/failed/expired or our own timeout is hit.
+                _log.LogWarning("Grok video poll failure (request_id={RequestId}): {Err}", requestId, ex.Message);
+                continue;
+            }
+
+            using var pollDoc = JsonDocument.Parse(pollBody);
+            var status = pollDoc.RootElement.TryGetProperty("status", out var statusProp)
+                ? statusProp.GetString() ?? ""
+                : "";
+
+            switch (status)
+            {
+                case "done":
+                    var video = pollDoc.RootElement.GetProperty("video");
+                    var videoUrl = video.GetProperty("url").GetString();
+                    if (string.IsNullOrEmpty(videoUrl))
+                        throw new InvalidOperationException(
+                            $"Grok video (request_id={requestId}) reported done but has no video.url.");
+                    int? durationSeconds = video.TryGetProperty("duration", out var durProp)
+                        && durProp.ValueKind == JsonValueKind.Number
+                        ? durProp.GetInt32()
+                        : null;
+                    _log.LogInformation(
+                        "Grok video [{Model}] done — request_id={RequestId}, duration={Duration}s",
+                        resolvedModel, requestId, durationSeconds);
+                    var bytes = await _http.GetByteArrayAsync(videoUrl, ct);
+                    return new VideoResult(bytes, durationSeconds);
+
+                case "failed":
+                case "expired":
+                    var detail = pollDoc.RootElement.TryGetProperty("error", out var errProp)
+                        ? errProp.ToString()
+                        : pollBody;
+                    throw new InvalidOperationException(
+                        $"Grok video generation {status} (request_id={requestId}). Detail: {detail}");
+
+                default: // "pending" or any other in-progress status — keep polling
+                    continue;
+            }
+        }
+    }
+
+    private async Task<string> GetWithAuthAsync(string url, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opts.ApiKey);
+        var response = await _http.SendAsync(request, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Grok video poll HTTP {(int)response.StatusCode}: {body}");
+        return body;
     }
 
     private async Task<ChatResult> PostChatAsync(

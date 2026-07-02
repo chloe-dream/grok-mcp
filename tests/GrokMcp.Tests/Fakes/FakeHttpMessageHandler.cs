@@ -30,6 +30,14 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         });
     }
 
+    public void EnqueueBytes(HttpStatusCode status, byte[] bytes)
+    {
+        _responders.Enqueue(_ => new HttpResponseMessage(status)
+        {
+            Content = new ByteArrayContent(bytes),
+        });
+    }
+
     public void EnqueueException(Exception ex)
     {
         _responders.Enqueue(_ => throw ex);

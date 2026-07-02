@@ -12,7 +12,7 @@ public class GrokClientTests
 {
     private const string ApiBase = "https://api.example.test/v1";
 
-    private static (GrokClient Client, FakeHttpMessageHandler Handler) Build()
+    private static (GrokClient Client, FakeHttpMessageHandler Handler) Build(string videoModel = "")
     {
         var handler = new FakeHttpMessageHandler();
         var http = new HttpClient(handler);
@@ -23,6 +23,7 @@ public class GrokClientTests
             ChatModel = "test-chat",
             CreativeModel = "test-vision",
             ImageModel = "test-image",
+            VideoModel = videoModel,
         });
         var client = new GrokClient(http, opts, NullLogger<GrokClient>.Instance);
         // Zero out retry delays so transient-error tests don't wait on the wall clock.
@@ -202,6 +203,7 @@ public class GrokClientTests
             model: null,
             n: 1,
             aspectRatio: "1:1",
+            resolution: null,
             responseFormat: "b64_json",
             inputs: null,
             CancellationToken.None);
@@ -210,6 +212,50 @@ public class GrokClientTests
         Assert.Equal($"{ApiBase}/images/generations", handler.Requests[0].Uri.ToString());
         Assert.Single(bytesList);
         Assert.Equal(pngBytes, bytesList[0]);
+    }
+
+    [Fact]
+    public async Task ImagesAsync_with_resolution_serializes_into_body()
+    {
+        var (client, handler) = Build();
+        var pngBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 };
+        var b64 = Convert.ToBase64String(pngBytes);
+        handler.EnqueueJson(HttpStatusCode.OK, $$"""{"data":[{"b64_json":"{{b64}}"}]}""");
+
+        await client.ImagesAsync(
+            prompt: "a circle",
+            model: null,
+            n: 1,
+            aspectRatio: "1:1",
+            resolution: "2k",
+            responseFormat: "b64_json",
+            inputs: null,
+            CancellationToken.None);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains("\"resolution\":\"2k\"", req.Body);
+    }
+
+    [Fact]
+    public async Task ImagesAsync_without_resolution_omits_field()
+    {
+        var (client, handler) = Build();
+        var pngBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 };
+        var b64 = Convert.ToBase64String(pngBytes);
+        handler.EnqueueJson(HttpStatusCode.OK, $$"""{"data":[{"b64_json":"{{b64}}"}]}""");
+
+        await client.ImagesAsync(
+            prompt: "a circle",
+            model: null,
+            n: 1,
+            aspectRatio: "1:1",
+            resolution: null,
+            responseFormat: "b64_json",
+            inputs: null,
+            CancellationToken.None);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.DoesNotContain("resolution", req.Body);
     }
 
     [Fact]
@@ -225,6 +271,7 @@ public class GrokClientTests
             model: null,
             n: 1,
             aspectRatio: "1:1",
+            resolution: null,
             responseFormat: "b64_json",
             inputs: inputs,
             CancellationToken.None);
@@ -244,7 +291,7 @@ public class GrokClientTests
             $$"""{"data":[{"b64_json":"{{b1}}"},{"b64_json":"{{b2}}"}]}""");
 
         var bytesList = await client.ImagesAsync(
-            "p", null, n: 2, "1:1", "b64_json", inputs: null, CancellationToken.None);
+            "p", null, n: 2, "1:1", null, "b64_json", inputs: null, CancellationToken.None);
 
         Assert.Equal(2, bytesList.Count);
         Assert.Equal(new byte[] { 0x01, 0x02 }, bytesList[0]);
@@ -271,6 +318,225 @@ public class GrokClientTests
         Assert.Equal($"{ApiBase}/chat/completions", req.Uri.ToString());
         Assert.Contains("image_url", req.Body);
         Assert.Contains("https://example.com/x.jpg", req.Body);
+    }
+
+    // ----- VideosAsync -----
+
+    private const string SuccessVideoStartJson = """{"request_id":"req-123"}""";
+
+    [Fact]
+    public async Task VideosAsync_success_polls_until_done_and_downloads_video()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+
+        var videoBytes = new byte[] { 0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70 };
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK, """{"status":"pending"}""");
+        handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4","duration":6}}""");
+        handler.EnqueueBytes(HttpStatusCode.OK, videoBytes);
+
+        var result = await client.VideosAsync(
+            prompt: "a cat running",
+            model: null,
+            duration: 8,
+            aspectRatio: "16:9",
+            resolution: "720p",
+            imageInput: null,
+            CancellationToken.None);
+
+        Assert.Equal(videoBytes, result.Bytes);
+        Assert.Equal(6, result.DurationSeconds);
+        Assert.Equal(4, handler.Requests.Count);
+        Assert.Equal($"{ApiBase}/videos/generations", handler.Requests[0].Uri.ToString());
+        Assert.Equal($"{ApiBase}/videos/req-123", handler.Requests[1].Uri.ToString());
+        Assert.Equal($"{ApiBase}/videos/req-123", handler.Requests[2].Uri.ToString());
+        Assert.Equal("https://cdn.example.test/v.mp4", handler.Requests[3].Uri.ToString());
+        Assert.Equal("Bearer", handler.Requests[1].Headers.Authorization?.Scheme);
+        Assert.Equal("test-key", handler.Requests[1].Headers.Authorization?.Parameter);
+    }
+
+    [Fact]
+    public async Task VideosAsync_serializes_optional_fields_into_body()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4","duration":3}}""");
+        handler.EnqueueBytes(HttpStatusCode.OK, new byte[] { 1, 2, 3 });
+
+        var imageInput = new { url = "data:image/png;base64,AAAA" };
+        await client.VideosAsync(
+            prompt: "zoom in",
+            model: "custom-video-model",
+            duration: 5,
+            aspectRatio: "9:16",
+            resolution: "1080p",
+            imageInput: imageInput,
+            CancellationToken.None);
+
+        var postReq = handler.Requests[0];
+        Assert.Equal($"{ApiBase}/videos/generations", postReq.Uri.ToString());
+        Assert.Contains("\"model\":\"custom-video-model\"", postReq.Body);
+        Assert.Contains("\"duration\":5", postReq.Body);
+        Assert.Contains("\"aspect_ratio\":\"9:16\"", postReq.Body);
+        Assert.Contains("\"resolution\":\"1080p\"", postReq.Body);
+        Assert.Contains("\"image\":{\"url\":\"data:image/png;base64,AAAA\"}", postReq.Body);
+    }
+
+    [Fact]
+    public async Task VideosAsync_text_to_video_auto_selects_grok_imagine_video_and_omits_optional_fields()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4"}}""");
+        handler.EnqueueBytes(HttpStatusCode.OK, new byte[] { 1 });
+
+        var result = await client.VideosAsync("p", null, 8, null, null, null, CancellationToken.None);
+
+        Assert.Null(result.DurationSeconds);
+        var postReq = handler.Requests[0];
+        Assert.Contains("\"model\":\"grok-imagine-video\"", postReq.Body);
+        Assert.DoesNotContain("grok-imagine-video-1.5", postReq.Body);
+        Assert.DoesNotContain("aspect_ratio", postReq.Body);
+        Assert.DoesNotContain("resolution", postReq.Body);
+        Assert.DoesNotContain("\"image\"", postReq.Body);
+    }
+
+    [Fact]
+    public async Task VideosAsync_image_to_video_auto_selects_grok_imagine_video_1_5()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4"}}""");
+        handler.EnqueueBytes(HttpStatusCode.OK, new byte[] { 1 });
+
+        var imageInput = new { url = "data:image/png;base64,AAAA" };
+        await client.VideosAsync("p", null, 8, null, null, imageInput, CancellationToken.None);
+
+        Assert.Contains("\"model\":\"grok-imagine-video-1.5\"", handler.Requests[0].Body);
+    }
+
+    [Fact]
+    public async Task VideosAsync_pinned_video_model_wins_over_auto_select()
+    {
+        var (client, handler) = Build(videoModel: "pinned-video-model");
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4"}}""");
+        handler.EnqueueBytes(HttpStatusCode.OK, new byte[] { 1 });
+
+        await client.VideosAsync("p", null, 8, null, null, null, CancellationToken.None);
+
+        Assert.Contains("\"model\":\"pinned-video-model\"", handler.Requests[0].Body);
+    }
+
+    [Fact]
+    public async Task VideosAsync_explicit_model_param_wins_over_pinned_video_model()
+    {
+        var (client, handler) = Build(videoModel: "pinned-video-model");
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4"}}""");
+        handler.EnqueueBytes(HttpStatusCode.OK, new byte[] { 1 });
+
+        await client.VideosAsync("p", "explicit-model", 8, null, null, null, CancellationToken.None);
+
+        Assert.Contains("\"model\":\"explicit-model\"", handler.Requests[0].Body);
+        Assert.DoesNotContain("pinned-video-model", handler.Requests[0].Body);
+    }
+
+    [Fact]
+    public async Task VideosAsync_failed_status_throws_with_request_id_and_detail()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK, """{"status":"failed","error":"content policy violation"}""");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.VideosAsync("p", null, 8, null, null, null, CancellationToken.None));
+
+        Assert.Contains("failed", ex.Message);
+        Assert.Contains("req-123", ex.Message);
+        Assert.Contains("content policy violation", ex.Message);
+    }
+
+    [Fact]
+    public async Task VideosAsync_expired_status_throws()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueJson(HttpStatusCode.OK, """{"status":"expired"}""");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.VideosAsync("p", null, 8, null, null, null, CancellationToken.None));
+
+        Assert.Contains("expired", ex.Message);
+        Assert.Contains("req-123", ex.Message);
+    }
+
+    [Fact]
+    public async Task VideosAsync_missing_request_id_throws()
+    {
+        var (client, handler) = Build();
+        handler.EnqueueJson(HttpStatusCode.OK, "{}");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.VideosAsync("p", null, 8, null, null, null, CancellationToken.None));
+
+        Assert.Contains("request_id", ex.Message);
+    }
+
+    [Fact]
+    public async Task VideosAsync_poll_network_failure_is_not_fatal_and_keeps_polling()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+        handler.EnqueueException(new HttpRequestException("connection reset"));
+        handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4","duration":2}}""");
+        handler.EnqueueBytes(HttpStatusCode.OK, new byte[] { 9 });
+
+        var result = await client.VideosAsync("p", null, 8, null, null, null, CancellationToken.None);
+
+        Assert.Equal(new byte[] { 9 }, result.Bytes);
+        Assert.Equal(4, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task VideosAsync_timeout_throws_with_request_id_before_any_poll()
+    {
+        var (client, handler) = Build();
+        client._videoPollInterval = TimeSpan.Zero;
+        client._videoPollTimeout = TimeSpan.Zero;
+
+        handler.EnqueueJson(HttpStatusCode.OK, SuccessVideoStartJson);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.VideosAsync("p", null, 8, null, null, null, CancellationToken.None));
+
+        Assert.Contains("timed out", ex.Message);
+        Assert.Contains("req-123", ex.Message);
+        Assert.Single(handler.Requests);
     }
 
     [Fact]

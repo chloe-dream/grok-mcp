@@ -207,6 +207,8 @@ begin
     '# GROK_MCP_CHAT_MODEL=grok-4.3' + nl +
     '# GROK_MCP_CREATIVE_MODEL=grok-4.3' + nl +
     '# GROK_MCP_IMAGE_MODEL=grok-imagine-image' + nl +
+    '# Video model pins both modes; default auto-selects per call:' + nl +
+    '# GROK_MCP_VIDEO_MODEL=grok-imagine-video-1.5' + nl +
     nl +
     '# Optional runtime tuning:' + nl +
     '# GROK_MCP_LOG_LEVEL=Information' + nl +

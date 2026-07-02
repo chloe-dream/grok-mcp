@@ -46,6 +46,7 @@ public class GrokToolsTests : IDisposable
         });
         var grok = new GrokClient(http, opts, NullLogger<GrokClient>.Instance);
         grok._retryDelays = new[] { TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero };
+        grok._videoPollInterval = TimeSpan.Zero;
 
         _sessions = new ChatSessionStore(opts);
         var resolver = new ImageInputResolver();
@@ -121,6 +122,66 @@ public class GrokToolsTests : IDisposable
         Assert.Empty(_handler.Requests);
     }
 
+    [Fact]
+    public async Task GrokChat_invalid_reasoning_effort_returns_error()
+    {
+        var result = await _tools.GrokChat("hi", reasoning_effort: "foo");
+        AssertError(result, "reasoning_effort must be one of");
+        Assert.Empty(_handler.Requests);
+    }
+
+    [Fact]
+    public async Task GrokGenerateImage_invalid_resolution_returns_error()
+    {
+        var result = await _tools.GrokGenerateImage("p", Path.Combine(_tmp, "x.png"), resolution: "4k");
+        AssertError(result, "resolution must be '1k' or '2k'");
+        Assert.Empty(_handler.Requests);
+    }
+
+    [Fact]
+    public async Task GrokEditImage_invalid_resolution_returns_error()
+    {
+        var result = await _tools.GrokEditImage(
+            "p",
+            new[] { "https://example.com/a.jpg" },
+            Path.Combine(_tmp, "x.png"),
+            resolution: "4k");
+        AssertError(result, "resolution must be '1k' or '2k'");
+        Assert.Empty(_handler.Requests);
+    }
+
+    [Fact]
+    public async Task GrokGenerateVideo_empty_prompt_returns_error()
+    {
+        var result = await _tools.GrokGenerateVideo("", Path.Combine(_tmp, "x.mp4"));
+        AssertError(result, "prompt must not be empty");
+        Assert.Empty(_handler.Requests);
+    }
+
+    [Fact]
+    public async Task GrokGenerateVideo_duration_out_of_range_returns_error()
+    {
+        var result = await _tools.GrokGenerateVideo("p", Path.Combine(_tmp, "x.mp4"), duration: 30);
+        AssertError(result, "duration must be between 1 and 15");
+        Assert.Empty(_handler.Requests);
+    }
+
+    [Fact]
+    public async Task GrokGenerateVideo_invalid_resolution_returns_error()
+    {
+        var result = await _tools.GrokGenerateVideo("p", Path.Combine(_tmp, "x.mp4"), resolution: "4k");
+        AssertError(result, "resolution must be one of: 480p, 720p, 1080p");
+        Assert.Empty(_handler.Requests);
+    }
+
+    [Fact]
+    public async Task GrokGenerateVideo_relative_output_path_returns_error_and_makes_no_http_call()
+    {
+        var result = await _tools.GrokGenerateVideo("p", "relative.mp4");
+        AssertError(result, "absolute path");
+        Assert.Empty(_handler.Requests);
+    }
+
     // ----- Success paths -----
 
     [Fact]
@@ -176,6 +237,48 @@ public class GrokToolsTests : IDisposable
         var result = await _tools.GrokChat("hi");
 
         AssertError(result, "Chat failed");
+    }
+
+    [Fact]
+    public async Task GrokChat_reasoning_effort_xhigh_is_accepted_and_serialized()
+    {
+        _handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
+
+        var result = await _tools.GrokChat("hi", reasoning_effort: "xhigh");
+
+        Assert.False(result.IsError ?? false);
+        var req = Assert.Single(_handler.Requests);
+        Assert.Contains("\"reasoning_effort\":\"xhigh\"", req.Body);
+    }
+
+    [Fact]
+    public async Task GrokGenerateVideo_success_saves_mp4_and_returns_text_summary_with_no_image_block()
+    {
+        _handler.EnqueueJson(HttpStatusCode.OK, """{"request_id":"req-xyz"}""");
+        _handler.EnqueueJson(HttpStatusCode.OK,
+            """{"status":"done","video":{"url":"https://cdn.example.test/v.mp4","duration":4}}""");
+        var videoBytes = new byte[] { 0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70 };
+        _handler.EnqueueBytes(HttpStatusCode.OK, videoBytes);
+
+        var outPath = Path.Combine(_tmp, "clip.mp4");
+        var result = await _tools.GrokGenerateVideo("a cat running", outPath);
+
+        Assert.False(result.IsError ?? false);
+        Assert.Single(result.Content);
+        var text = Assert.IsType<TextContentBlock>(result.Content[0]);
+        Assert.Contains(outPath, text.Text);
+        Assert.Contains("4s", text.Text);
+        Assert.True(File.Exists(outPath));
+    }
+
+    [Fact]
+    public async Task GrokGenerateVideo_grok_failure_returns_error_result_with_message()
+    {
+        _handler.EnqueueStatus(HttpStatusCode.BadRequest, "bad video request");
+
+        var result = await _tools.GrokGenerateVideo("p", Path.Combine(_tmp, "x.mp4"));
+
+        AssertError(result, "Video generation failed");
     }
 
     // ----- Helpers -----

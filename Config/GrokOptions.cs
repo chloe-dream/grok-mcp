@@ -9,6 +9,9 @@ public class GrokOptions
     public string ChatModel { get; set; } = "grok-4.3";
     public string CreativeModel { get; set; } = "grok-4.3";
     public string ImageModel { get; set; } = "grok-imagine-image";
+    // Empty = auto-select per call in GrokClient.VideosAsync (image-to-video and text-to-video
+    // need different models). Set GROK_MCP_VIDEO_MODEL to pin one model for both modes.
+    public string VideoModel { get; set; } = "";
     public int HttpTimeoutSeconds { get; set; } = 300;
     public int SessionTurnCap { get; set; } = 50;
     public int ListenPort { get; set; } = 6677;
@@ -32,6 +35,7 @@ public class GrokOptions
         o.ChatModel = NonEmpty("GROK_MCP_CHAT_MODEL", o.ChatModel);
         o.CreativeModel = NonEmpty("GROK_MCP_CREATIVE_MODEL", o.CreativeModel);
         o.ImageModel = NonEmpty("GROK_MCP_IMAGE_MODEL", o.ImageModel);
+        o.VideoModel = NonEmpty("GROK_MCP_VIDEO_MODEL", o.VideoModel);
         o.LogLevel = NonEmpty("GROK_MCP_LOG_LEVEL", o.LogLevel);
 
         var localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);

@@ -1,9 +1,10 @@
 # HOWTO: Using grok-mcp from Claude Code
 
-A field guide for Claude Code instances. Grok-mcp exposes four tools (`grok_chat`,
-`grok_generate_image`, `grok_edit_image`, `grok_describe_image`) that cover three
-of Claude's structural weak spots: image generation, image editing, and getting
-an independent technical opinion that is not biased by Claude's own reasoning.
+A field guide for Claude Code instances. Grok-mcp exposes five tools (`grok_chat`,
+`grok_generate_image`, `grok_edit_image`, `grok_describe_image`, `grok_generate_video`)
+that cover four of Claude's structural weak spots: image generation, image editing,
+video generation, and getting an independent technical opinion that is not biased
+by Claude's own reasoning.
 
 This document is the result of a hands-on test session — every quirk listed
 below was observed, not assumed.
@@ -14,6 +15,7 @@ below was observed, not assumed.
 |---|---|---|
 | User wants a generated image (mockup, hero art, placeholder asset) | `grok_generate_image` | Claude cannot generate raster images. Grok can. |
 | User wants an existing image transformed (recolor, restyle, composite) | `grok_edit_image` | Same — image→image is impossible without an external model. |
+| User wants a short video clip (product demo, motion mockup, animated asset) | `grok_generate_video` | Claude cannot generate video either. Grok can, from text alone or from a seed image (image-to-video). Expect the call to block for minutes. |
 | User uploads a screenshot, diagram, or photo and asks what's in it (deep vision, not just OCR) | `grok_describe_image` | Defaults to `grok-4.3`, returns plain text — easy to chain. |
 | User asks for a design / architecture review and Claude wrote the design | `grok_chat` with `reasoning_effort = "high"` | Independent second opinion. Grok has not seen the prior reasoning, so it pushes back instead of rationalising. |
 | Claude is uncertain about a fundamental technical claim and risks confabulating | `grok_chat` | Fact-check, devil's advocate, sycophancy-resistant sanity check. |
@@ -31,7 +33,9 @@ training cutoff lags — see [Footguns](#footguns)).
 grok_generate_image(
   prompt = "<concrete visual brief — subject, framing, lighting, style>",
   output_path = "C:\\absolute\\path\\to\\file.jpg",   // see ext footgun below
-  aspect_ratio = "1:1" | "3:2" | "16:9" | "9:16",
+  aspect_ratio = "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | "2:3" | "3:2" |
+                 "9:19.5" | "19.5:9" | "9:20" | "20:9" | "1:2" | "2:1" | "auto",
+  resolution = "1k" | "2k",                            // optional — omit for xAI default
   n = 1                                                // up to 10
 )
 ```
@@ -39,7 +43,9 @@ grok_generate_image(
 - `output_path` **must be absolute**. The MCP server's CWD is not Claude's CWD.
 - For `n>1`, the index is inserted before the extension: `art.jpg` → `art-1.jpg`,
   `art-2.jpg`, …
-- Default model is `grok-imagine-image`. No need to override unless the user asks.
+- Default model is `grok-imagine-image`. No need to override unless the user asks —
+  pass `model = "grok-imagine-image-quality"` when the user explicitly wants higher
+  quality (it's priced per image, flat, regardless of resolution).
 
 ### 2. Edit / re-style an image
 
@@ -48,7 +54,8 @@ grok_edit_image(
   prompt = "<change instructions — what to keep, what to change>",
   images = ["C:\\absolute\\path\\to\\input.jpg"],     // or http(s) URL, data:, or raw base64
   output_path = "C:\\absolute\\path\\to\\output.jpg",
-  aspect_ratio = "1:1",
+  aspect_ratio = "1:1",                                // same expanded value list as grok_generate_image, plus "auto"
+  resolution = "1k" | "2k",                            // optional — omit for xAI default
   n = 1                                                // up to 4
 )
 ```
@@ -108,6 +115,14 @@ vision, configurable reasoning. Tune `reasoning_effort`:
 - `"high"` — deepest reasoning. Reserve for hard problems (architecture
   critique, tricky maths, sycophancy-resistant analysis).
 
+`reasoning_effort` also accepts `"xhigh"`, but it only means something on
+`model = "grok-4.20-multi-agent-0309"` — there it controls how many agents run
+(4 vs 16) rather than reasoning depth, and is rejected on `grok-4.3`. Beyond
+the multi-agent model, xAI also offers `grok-4.20-0309-reasoning` /
+`grok-4.20-0309-non-reasoning` (1M context) and `grok-build-0.1` (256k,
+coding-focused) via `model`; `grok-4.3` remains the recommended default for
+general use.
+
 ### 5. Chat — second-opinion / design review
 
 When asking for a critical review, **invite criticism explicitly** in the
@@ -148,6 +163,39 @@ grok_chat(message = "...", session_id = "<namespaced-id>", reset_session = true)
 Sessions are in-memory only — lifetime equals the server process. They are
 **also shared across all Claude Code clients** that connect to the same server.
 See [Footguns](#footguns) for the naming convention.
+
+### 7. Generate a video
+
+```
+grok_generate_video(
+  prompt = "<concrete motion brief — subject, action, camera movement, style>",
+  output_path = "C:\\absolute\\path\\to\\file.mp4",
+  duration = 8,                                        // seconds, 1-15, default 8
+  aspect_ratio = "16:9",                                // default; also 1:1, 9:16, 4:3, 3:4, 3:2, 2:3
+  resolution = "720p",                                  // 480p | 720p | 1080p, default 720p
+  image = "C:\\absolute\\path\\to\\seed.jpg"             // optional — image-to-video
+)
+```
+
+- `output_path` **must be absolute**, same rule as the image tools. The result
+  is saved as an `.mp4`.
+- Generation is **asynchronous on xAI's side**: the server kicks off the job,
+  then polls every 5 seconds until it's done. The tool call itself can block
+  for **several minutes** — warn the user up front, don't assume a fast
+  round-trip.
+- Pass `image` to seed the clip from a still image (image-to-video) instead of
+  pure text-to-video. Same accepted shapes as `grok_edit_image` inputs
+  (`http(s)://` URL, absolute file path, `data:` URI, raw base64) — but only
+  one image, not an array.
+- The model is **auto-selected per call**: `grok-imagine-video-1.5` when you
+  pass a seed `image` (image-to-video), `grok-imagine-video` for pure
+  text-to-video. This is not cosmetic — `grok-imagine-video-1.5` **rejects
+  text-to-video** with HTTP 400 ("Text-to-video is not supported for this
+  model"), so don't force it via `model` unless you're also passing `image`.
+  Set `GROK_MCP_VIDEO_MODEL` in `config.env` to pin one model for both modes.
+- Unlike the image tools, the response is **text only** — a saved path (and
+  duration, if reported). Video can't be inlined the way images are, so there's
+  nothing to re-render; just point the user at the file.
 
 ## Power features
 
@@ -420,7 +468,11 @@ unredacted customer data, or NDA-covered material into Grok prompts.
 ## Model & reasoning-effort cheat sheet
 
 Chat and vision both run on `grok-4.3` (default). The shape of the answer is
-controlled by `reasoning_effort` on `grok_chat`, not by swapping models.
+controlled by `reasoning_effort` on `grok_chat`, not by swapping models. xAI
+also publishes `grok-4.20-0309-reasoning` / `grok-4.20-0309-non-reasoning` /
+`grok-4.20-multi-agent-0309` (all 1M context) and `grok-build-0.1` (256k,
+coding-focused) — pass any of these via `model` for specialized needs, but
+`grok-4.3` stays the recommended default.
 
 | Task | Tool | `reasoning_effort` | Why |
 |---|---|---|---|
@@ -428,8 +480,10 @@ controlled by `reasoning_effort` on `grok_chat`, not by swapping models.
 | General chat, casual question | `grok_chat` | omit (xAI default `"low"`) | Baseline reasoning, sensible defaults. |
 | Code review, technical critique | `grok_chat` | `"medium"` | Extra deliberation for non-trivial calls. |
 | Design review, architecture critique, hard reasoning | `grok_chat` | `"high"` | Deepest reasoning — structured push-back. |
+| Multi-agent orchestration | `grok_chat` (`model="grok-4.20-multi-agent-0309"`) | `"xhigh"` | Not deeper reasoning — spins up 16 agents instead of 4. |
 | Vision (describe, OCR-like, diagram reading) | `grok_describe_image` | n/a | grok-4.3 is the vision-capable model. |
-| Image gen / edit | `grok_generate_image` / `grok_edit_image` | n/a | `grok-imagine-image` is the only image model exposed. |
+| Image gen / edit | `grok_generate_image` / `grok_edit_image` | n/a | Default `grok-imagine-image`; pass `model="grok-imagine-image-quality"` for a higher-quality, flat-priced alternative. |
+| Video gen | `grok_generate_video` | n/a | Auto-selected: `grok-imagine-video-1.5` with a seed image (image-to-video), `grok-imagine-video` for text-to-video. `grok-imagine-video-1.5` rejects text-to-video (HTTP 400). |
 
 Pass `reasoning_effort` per call rather than changing the server default. The
 server-side default is "let xAI decide" (currently `"low"`), which is right
@@ -443,6 +497,21 @@ at the **cached rate (`$0.20/M` input, ~16% of normal)** instead of the
 full `$1.25/M`. Practical implication: long-lived `session_id`-chats with a
 shared system prompt and growing history are dramatically cheaper than
 stateless one-shots that re-send the same context every turn.
+
+Three rules to keep the cache hitting:
+
+1. **Use a `session_id` whenever you'll ask more than one question about the
+   same context.** Every stateless one-shot re-bills the full context at the
+   normal rate.
+2. **Keep `system` and `model` stable within a session.** The cache matches on
+   an exact token prefix — a changed system prompt invalidates it from byte
+   one, and a different model has a different cache entirely. (A new `system`
+   on an existing session also *replaces* the old one — see "Sharp `system`
+   prompt" above.)
+3. **Static content first, variable content last.** Put large unchanging
+   blocks (reference text, instructions) into `system` or the earliest turns;
+   only the final user message should vary. Anything before the first changed
+   token is cache-eligible, anything after it is not.
 
 ## A complete worked example
 

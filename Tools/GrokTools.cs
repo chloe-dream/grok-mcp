@@ -1,6 +1,8 @@
 using System.ComponentModel;
+using GrokMcp.Config;
 using GrokMcp.Services;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -13,6 +15,7 @@ public class GrokTools
     private readonly ChatSessionStore _sessions;
     private readonly ImageInputResolver _imgResolver;
     private readonly ImageWriter _imgWriter;
+    private readonly GrokOptions _opts;
     private readonly ILogger<GrokTools> _log;
 
     public GrokTools(
@@ -20,35 +23,104 @@ public class GrokTools
         ChatSessionStore sessions,
         ImageInputResolver imgResolver,
         ImageWriter imgWriter,
+        IOptions<GrokOptions> opts,
         ILogger<GrokTools> log)
     {
         _grok = grok;
         _sessions = sessions;
         _imgResolver = imgResolver;
         _imgWriter = imgWriter;
+        _opts = opts.Value;
         _log = log;
     }
 
     [McpServerTool(Name = "grok_chat"), Description(
-        "Send a chat completion to xAI Grok. Stateless by default. " +
-        "Pass session_id to enable an in-memory thread that persists for the lifetime of this server process; " +
-        "the same session_id on subsequent calls appends to and replays prior turns. " +
+        "Send a chat completion to xAI Grok's flagship model (grok-4.5: 500k context, vision, function calling). " +
+        "This model always reasons before answering and cannot be told not to — for a fast non-reasoning answer " +
+        "call grok_chat_fast instead, and for a hard problem worth a team of agents call grok_chat_multi_agent. " +
+        "Stateless by default. Pass session_id to enable an in-memory thread that persists for the lifetime of " +
+        "this server process; the same session_id on subsequent calls appends to and replays prior turns. " +
         "Returns the assistant text only.")]
     public async Task<CallToolResult> GrokChat(
         [Description("User message (required).")] string message,
         [Description("Optional system prompt prepended to the conversation. On a session, replaces any prior system prompt.")] string? system = null,
-        [Description("Model override. Defaults to grok-4.3 (xAI's flagship: 1M context, vision, function calling, reasoning). Alternatives: grok-4.20-0309-reasoning / grok-4.20-0309-non-reasoning, grok-4.20-multi-agent-0309 (multi-agent, 1M context), grok-build-0.1 (coding-focused, 256k context).")] string? model = null,
+        [Description("Model override. Defaults to grok-4.5. Pass grok-4.3 when you need more than 500k context (it has 1M, at the cost of a weaker model).")] string? model = null,
         [Description("Sampling temperature 0.0-2.0. Default 0.7.")] float temperature = 0.7f,
-        [Description("Optional session id. Same id reuses in-memory chat history within this server process. Omit for stateless one-shot. When set, also routes to the same xAI server for prompt-prefix caching (cached input is billed at ~16% of normal).")] string? session_id = null,
+        [Description("Optional session id. Same id reuses in-memory chat history within this server process. Omit for stateless one-shot. When set, also routes to the same xAI server for prompt-prefix caching (cached input is billed at a quarter of normal on grok-4.5).")] string? session_id = null,
         [Description("If true, clears the named session before this turn. No effect when session_id is null.")] bool reset_session = false,
-        [Description("Reasoning depth. On grok-4.3: one of 'none', 'low', 'medium', 'high' (xAI default 'low'); use 'none' for cheap/fast non-reasoning calls, 'high' for hard problems. 'xhigh' is only meaningful on grok-4.20-multi-agent-0309, where it controls agent count (4 vs 16) rather than reasoning depth. Omit to let xAI default apply.")] string? reasoning_effort = null,
+        [Description("Reasoning depth: 'low', 'medium' or 'high'. Omit to let xAI default apply (grok-4.5 defaults to 'high'). Reasoning cannot be switched off here — that is what grok_chat_fast is for.")] string? reasoning_effort = null,
         CancellationToken ct = default)
+    {
+        if (!string.IsNullOrWhiteSpace(reasoning_effort) &&
+            reasoning_effort is not ("low" or "medium" or "high"))
+            return Error("reasoning_effort must be one of: low, medium, high. " +
+                         "For a non-reasoning answer use grok_chat_fast; for 16-agent mode use grok_chat_multi_agent.");
+
+        return await RunChatAsync("grok_chat", message, system, session_id, reset_session,
+            (messages, conversationId, token) =>
+                _grok.ChatAsync(messages, model, temperature, reasoning_effort, conversationId, token),
+            ct);
+    }
+
+    [McpServerTool(Name = "grok_chat_fast"), Description(
+        "Send a chat completion to a dedicated non-reasoning Grok model (grok-4.20-0309-non-reasoning: 1M context). " +
+        "The model answers immediately without thinking first, which makes this the fast, cheap path for lookups, " +
+        "classification, extraction, summarising and reformatting. There is deliberately no reasoning option — " +
+        "if the answer needs actual thought, call grok_chat. Sessions work exactly as in grok_chat. " +
+        "Returns the assistant text only.")]
+    public async Task<CallToolResult> GrokChatFast(
+        [Description("User message (required).")] string message,
+        [Description("Optional system prompt prepended to the conversation. On a session, replaces any prior system prompt.")] string? system = null,
+        [Description("Sampling temperature 0.0-2.0. Default 0.7.")] float temperature = 0.7f,
+        [Description("Optional session id. Same id reuses in-memory chat history within this server process. Omit for stateless one-shot.")] string? session_id = null,
+        [Description("If true, clears the named session before this turn. No effect when session_id is null.")] bool reset_session = false,
+        CancellationToken ct = default)
+        => await RunChatAsync("grok_chat_fast", message, system, session_id, reset_session,
+            (messages, conversationId, token) =>
+                _grok.ChatAsync(messages, _opts.FastModel, temperature, reasoningEffort: null, conversationId, token),
+            ct);
+
+    [McpServerTool(Name = "grok_chat_multi_agent"), Description(
+        "Send a hard problem to Grok's multi-agent model (grok-4.20-multi-agent-0309), where a team of agents works " +
+        "the question in parallel and reconciles their answers into one. Markedly slower and far more token-hungry " +
+        "than grok_chat — even a trivial question burns thousands of tokens on agent overhead — so reserve it for " +
+        "problems where independent cross-checking is actually worth it. The model tends to append a " +
+        "'\\confidence{N}' marker to its answer; that is the model's own output, not a wrapper artifact. " +
+        "Sessions work exactly as in grok_chat. Returns the assistant text only.")]
+    public async Task<CallToolResult> GrokChatMultiAgent(
+        [Description("User message (required).")] string message,
+        [Description("Optional system prompt prepended to the conversation. On a session, replaces any prior system prompt.")] string? system = null,
+        [Description("How many agents work the problem: 4 (default) or 16. 16 explores more widely and costs proportionally more.")] int agents = 4,
+        [Description("Sampling temperature 0.0-2.0. Default 0.7.")] float temperature = 0.7f,
+        [Description("Optional session id. Same id reuses in-memory chat history within this server process. Omit for stateless one-shot.")] string? session_id = null,
+        [Description("If true, clears the named session before this turn. No effect when session_id is null.")] bool reset_session = false,
+        CancellationToken ct = default)
+    {
+        if (agents is not (4 or 16))
+            return Error("agents must be either 4 or 16.");
+
+        // xAI expresses agent count through reasoning_effort on this model: high = 4, xhigh = 16.
+        var effort = agents == 16 ? "xhigh" : "high";
+
+        return await RunChatAsync("grok_chat_multi_agent", message, system, session_id, reset_session,
+            (messages, conversationId, token) =>
+                _grok.ResponsesAsync(messages, model: null, temperature, effort, conversationId, token),
+            ct);
+    }
+
+    // The three chat tools differ only in which model/endpoint they hit; session assembly,
+    // history replay and error shaping are identical, so they share this.
+    private async Task<CallToolResult> RunChatAsync(
+        string toolName,
+        string message,
+        string? system,
+        string? session_id,
+        bool reset_session,
+        Func<List<object>, string?, CancellationToken, Task<GrokClient.ChatResult>> invoke,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(message))
             return Error("message must not be empty.");
-        if (!string.IsNullOrWhiteSpace(reasoning_effort) &&
-            reasoning_effort is not ("none" or "low" or "medium" or "high" or "xhigh"))
-            return Error("reasoning_effort must be one of: none, low, medium, high, xhigh.");
 
         try
         {
@@ -66,7 +138,7 @@ public class GrokTools
 
                 messages.Add(new { role = "user", content = message });
 
-                var result = await _grok.ChatAsync(messages, model, temperature, reasoning_effort, session_id, ct);
+                var result = await invoke(messages, session_id, ct);
 
                 _sessions.Append(session_id, new ChatTurn("user", message));
                 _sessions.Append(session_id, new ChatTurn("assistant", result.Content));
@@ -78,12 +150,12 @@ public class GrokTools
                 messages.Add(new { role = "system", content = system });
             messages.Add(new { role = "user", content = message });
 
-            var oneShot = await _grok.ChatAsync(messages, model, temperature, reasoning_effort, conversationId: null, ct);
+            var oneShot = await invoke(messages, null, ct);
             return Text(oneShot.Content);
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "grok_chat failed");
+            _log.LogError(ex, "{Tool} failed", toolName);
             return Error($"Chat failed: {ex.Message}");
         }
     }
@@ -166,7 +238,7 @@ public class GrokTools
     public async Task<CallToolResult> GrokDescribeImage(
         [Description("The question or instruction (e.g. 'Describe this image', 'Read the text', 'What style is this art in?'). Required.")] string prompt,
         [Description("One or more images to analyze. Required.")] string[] images,
-        [Description("Vision-capable model. Defaults to grok-4.3.")] string? model = null,
+        [Description("Vision-capable model. Defaults to grok-4.5.")] string? model = null,
         [Description("Detail level passed through to xAI ('low' | 'high' | 'auto'). Default 'auto'.")] string detail = "auto",
         [Description("Sampling temperature. Default 0.2 for descriptive accuracy.")] float temperature = 0.2f,
         CancellationToken ct = default)

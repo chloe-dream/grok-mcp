@@ -22,6 +22,8 @@ public class GrokClientTests
             ApiBaseUrl = ApiBase,
             ChatModel = "test-chat",
             CreativeModel = "test-vision",
+            FastModel = "test-fast",
+            MultiAgentModel = "test-multi-agent",
             ImageModel = "test-image",
             VideoModel = videoModel,
         });
@@ -159,6 +161,41 @@ public class GrokClientTests
 
         var req = Assert.Single(handler.Requests);
         Assert.DoesNotContain("reasoning_effort", req.Body);
+    }
+
+    // /responses wraps the answer differently from /chat/completions: the text sits in
+    // output[].content[].text, and the array also carries non-message items (reasoning) that
+    // must be skipped rather than concatenated into the answer.
+    [Fact]
+    public async Task ResponsesAsync_extracts_output_text_and_skips_non_message_items()
+    {
+        var (client, handler) = Build();
+        handler.EnqueueJson(HttpStatusCode.OK, """
+            {
+              "output": [
+                {"type": "reasoning", "id": "rs_1"},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "team answer"}]}
+              ],
+              "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+            }
+            """);
+
+        var result = await client.ResponsesAsync(
+            new object[] { new { role = "user", content = "hi" } },
+            model: null, temperature: 0.7f, reasoningEffort: "xhigh",
+            conversationId: null, CancellationToken.None);
+
+        Assert.Equal("team answer", result.Content);
+        // /responses reports input_tokens/output_tokens, not prompt_tokens/completion_tokens.
+        Assert.Equal(10, result.PromptTokens);
+        Assert.Equal(5, result.CompletionTokens);
+        Assert.Equal(15, result.TotalTokens);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Equal($"{ApiBase}/responses", req.Uri.ToString());
+        Assert.Contains("\"model\":\"test-multi-agent\"", req.Body);
+        Assert.Contains("\"input\":", req.Body);
     }
 
     [Fact]

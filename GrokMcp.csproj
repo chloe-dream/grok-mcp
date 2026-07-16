@@ -33,6 +33,11 @@
   <ItemGroup>
     <Compile Remove="tests\**" />
     <None Remove="tests\**" />
+    <!-- Content too: the Web SDK globs **/* into Content, so without this the test project's
+         obj/*.json is copied into the output under its relative path. The test project
+         references this one, so that tree gets copied again on every build, nesting one level
+         deeper each time until the copy fails with MSB3030. -->
+    <Content Remove="tests\**" />
   </ItemGroup>
 
 </Project>

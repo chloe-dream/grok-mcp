@@ -29,6 +29,18 @@ public class GrokToolsTests : IDisposable
         }
         """;
 
+    // /responses shape — multi-agent only. Note the different envelope and usage field names.
+    private const string SuccessResponsesJson = """
+        {
+          "output": [
+            {"type": "reasoning", "id": "rs_1"},
+            {"type": "message", "role": "assistant",
+             "content": [{"type": "output_text", "text": "team answer"}]}
+          ],
+          "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        }
+        """;
+
     public GrokToolsTests()
     {
         _tmp = Path.Combine(Path.GetTempPath(), "grok-mcp-tests", Guid.NewGuid().ToString("N"));
@@ -41,6 +53,8 @@ public class GrokToolsTests : IDisposable
             ApiBaseUrl = ApiBase,
             ChatModel = "test-chat",
             CreativeModel = "test-vision",
+            FastModel = "test-fast",
+            MultiAgentModel = "test-multi-agent",
             ImageModel = "test-image",
             SessionTurnCap = 10,
         });
@@ -51,7 +65,7 @@ public class GrokToolsTests : IDisposable
         _sessions = new ChatSessionStore(opts);
         var resolver = new ImageInputResolver();
         var writer = new ImageWriter();
-        _tools = new GrokTools(grok, _sessions, resolver, writer, NullLogger<GrokTools>.Instance);
+        _tools = new GrokTools(grok, _sessions, resolver, writer, opts, NullLogger<GrokTools>.Instance);
     }
 
     public void Dispose()
@@ -240,15 +254,98 @@ public class GrokToolsTests : IDisposable
     }
 
     [Fact]
-    public async Task GrokChat_reasoning_effort_xhigh_is_accepted_and_serialized()
+    public async Task GrokChat_reasoning_effort_high_is_accepted_and_serialized()
     {
         _handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
 
-        var result = await _tools.GrokChat("hi", reasoning_effort: "xhigh");
+        var result = await _tools.GrokChat("hi", reasoning_effort: "high");
 
         Assert.False(result.IsError ?? false);
         var req = Assert.Single(_handler.Requests);
-        Assert.Contains("\"reasoning_effort\":\"xhigh\"", req.Body);
+        Assert.Contains("\"reasoning_effort\":\"high\"", req.Body);
+    }
+
+    // 'none' used to be the documented way to get a cheap non-reasoning answer, but the flagship
+    // model rejects it with HTTP 400. grok_chat_fast is the replacement; fail before spending a call.
+    [Theory]
+    [InlineData("none")]
+    [InlineData("xhigh")]
+    public async Task GrokChat_rejects_efforts_the_flagship_model_cannot_serve(string effort)
+    {
+        var result = await _tools.GrokChat("hi", reasoning_effort: effort);
+
+        AssertError(result, "reasoning_effort must be one of");
+        Assert.Empty(_handler.Requests);
+    }
+
+    [Fact]
+    public async Task GrokChatFast_uses_fast_model_and_never_sends_reasoning_effort()
+    {
+        _handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
+
+        var result = await _tools.GrokChatFast("hi");
+
+        Assert.False(result.IsError ?? false);
+        var req = Assert.Single(_handler.Requests);
+        Assert.Contains("\"model\":\"test-fast\"", req.Body);
+        Assert.DoesNotContain("reasoning_effort", req.Body);
+        Assert.EndsWith("/chat/completions", req.Uri.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task GrokChatFast_with_session_id_shares_history_with_grok_chat()
+    {
+        _handler.EnqueueJson(HttpStatusCode.OK, SuccessChatJson);
+
+        var session = $"test-session-{Guid.NewGuid():N}";
+        await _tools.GrokChatFast("first message", session_id: session);
+
+        var snap = _sessions.Snapshot(session);
+        Assert.Equal(2, snap.Count);
+        Assert.Equal("first message", snap[0].Content);
+        Assert.Equal("answer", snap[1].Content);
+    }
+
+    [Theory]
+    [InlineData(4, "high")]
+    [InlineData(16, "xhigh")]
+    public async Task GrokChatMultiAgent_maps_agent_count_onto_reasoning_effort(int agents, string expectedEffort)
+    {
+        _handler.EnqueueJson(HttpStatusCode.OK, SuccessResponsesJson);
+
+        var result = await _tools.GrokChatMultiAgent("hi", agents: agents);
+
+        Assert.False(result.IsError ?? false);
+        var text = Assert.IsType<TextContentBlock>(result.Content[0]);
+        Assert.Equal("team answer", text.Text);
+
+        var req = Assert.Single(_handler.Requests);
+        Assert.Contains($"\"reasoning_effort\":\"{expectedEffort}\"", req.Body);
+        Assert.Contains("\"model\":\"test-multi-agent\"", req.Body);
+    }
+
+    // The multi-agent model is rejected on /chat/completions, so hitting /responses is the
+    // whole point of this tool — assert the endpoint, not just the payload.
+    [Fact]
+    public async Task GrokChatMultiAgent_posts_to_responses_endpoint_with_input_not_messages()
+    {
+        _handler.EnqueueJson(HttpStatusCode.OK, SuccessResponsesJson);
+
+        await _tools.GrokChatMultiAgent("hi");
+
+        var req = Assert.Single(_handler.Requests);
+        Assert.EndsWith("/responses", req.Uri.AbsolutePath);
+        Assert.Contains("\"input\":", req.Body);
+        Assert.DoesNotContain("\"messages\":", req.Body);
+    }
+
+    [Fact]
+    public async Task GrokChatMultiAgent_invalid_agent_count_returns_error_and_makes_no_http_call()
+    {
+        var result = await _tools.GrokChatMultiAgent("hi", agents: 8);
+
+        AssertError(result, "agents must be either 4 or 16");
+        Assert.Empty(_handler.Requests);
     }
 
     [Fact]

@@ -6,8 +6,13 @@ public class GrokOptions
 {
     public string ApiKey { get; set; } = "";
     public string ApiBaseUrl { get; set; } = "https://api.x.ai/v1";
-    public string ChatModel { get; set; } = "grok-4.3";
-    public string CreativeModel { get; set; } = "grok-4.3";
+    public string ChatModel { get; set; } = "grok-4.5";
+    public string CreativeModel { get; set; } = "grok-4.5";
+    // Dedicated non-reasoning model behind grok_chat_fast. Not a "cheap tier" of ChatModel:
+    // grok-4.5 rejects reasoning_effort='none' outright, so the fast path needs its own model.
+    public string FastModel { get; set; } = "grok-4.20-0309-non-reasoning";
+    // Only reachable via /responses — xAI rejects this model on /chat/completions.
+    public string MultiAgentModel { get; set; } = "grok-4.20-multi-agent-0309";
     public string ImageModel { get; set; } = "grok-imagine-image";
     // Empty = auto-select per call in GrokClient.VideosAsync (image-to-video and text-to-video
     // need different models). Set GROK_MCP_VIDEO_MODEL to pin one model for both modes.
@@ -34,6 +39,8 @@ public class GrokOptions
         o.ApiKey = Environment.GetEnvironmentVariable("XAI_API_KEY") ?? "";
         o.ChatModel = NonEmpty("GROK_MCP_CHAT_MODEL", o.ChatModel);
         o.CreativeModel = NonEmpty("GROK_MCP_CREATIVE_MODEL", o.CreativeModel);
+        o.FastModel = NonEmpty("GROK_MCP_FAST_MODEL", o.FastModel);
+        o.MultiAgentModel = NonEmpty("GROK_MCP_MULTI_AGENT_MODEL", o.MultiAgentModel);
         o.ImageModel = NonEmpty("GROK_MCP_IMAGE_MODEL", o.ImageModel);
         o.VideoModel = NonEmpty("GROK_MCP_VIDEO_MODEL", o.VideoModel);
         o.LogLevel = NonEmpty("GROK_MCP_LOG_LEVEL", o.LogLevel);

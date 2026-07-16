@@ -1,10 +1,11 @@
 # HOWTO: Using grok-mcp from Claude Code
 
-A field guide for Claude Code instances. Grok-mcp exposes five tools (`grok_chat`,
-`grok_generate_image`, `grok_edit_image`, `grok_describe_image`, `grok_generate_video`)
-that cover four of Claude's structural weak spots: image generation, image editing,
-video generation, and getting an independent technical opinion that is not biased
-by Claude's own reasoning.
+A field guide for Claude Code instances. Grok-mcp exposes seven tools — three for
+chat (`grok_chat`, `grok_chat_fast`, `grok_chat_multi_agent`) and four for media
+(`grok_generate_image`, `grok_edit_image`, `grok_describe_image`,
+`grok_generate_video`) — that cover four of Claude's structural weak spots: image
+generation, image editing, video generation, and getting an independent technical
+opinion that is not biased by Claude's own reasoning.
 
 This document is the result of a hands-on test session — every quirk listed
 below was observed, not assumed.
@@ -16,7 +17,7 @@ below was observed, not assumed.
 | User wants a generated image (mockup, hero art, placeholder asset) | `grok_generate_image` | Claude cannot generate raster images. Grok can. |
 | User wants an existing image transformed (recolor, restyle, composite) | `grok_edit_image` | Same — image→image is impossible without an external model. |
 | User wants a short video clip (product demo, motion mockup, animated asset) | `grok_generate_video` | Claude cannot generate video either. Grok can, from text alone or from a seed image (image-to-video). Expect the call to block for minutes. |
-| User uploads a screenshot, diagram, or photo and asks what's in it (deep vision, not just OCR) | `grok_describe_image` | Defaults to `grok-4.3`, returns plain text — easy to chain. |
+| User uploads a screenshot, diagram, or photo and asks what's in it (deep vision, not just OCR) | `grok_describe_image` | Defaults to `grok-4.5`, returns plain text — easy to chain. |
 | User asks for a design / architecture review and Claude wrote the design | `grok_chat` with `reasoning_effort = "high"` | Independent second opinion. Grok has not seen the prior reasoning, so it pushes back instead of rationalising. |
 | Claude is uncertain about a fundamental technical claim and risks confabulating | `grok_chat` | Fact-check, devil's advocate, sycophancy-resistant sanity check. |
 | User has a long, throwaway processing task that would bloat Claude's context | `grok_chat` with a `session_id` | Offload to Grok's process memory, pull back only the conclusion. |
@@ -96,32 +97,52 @@ You get clean numbered answers back that are easy to act on.
 
 ### 4. Chat — one-shot
 
+**Pick the tool, not the model.** Whether Grok thinks before answering is
+decided by *which of the three chat tools you call*, not by a flag:
+
 ```
 grok_chat(
   message = "<the question>",
-  model = "grok-4.3",                                  // default — no need to set
-  reasoning_effort = "none" | "low" | "medium" | "high",  // omit → xAI default ("low")
-  temperature = 0.3                                    // lower for review/factual, higher for ideation
+  reasoning_effort = "low" | "medium" | "high",  // omit → xAI default ("high")
+  temperature = 0.3                              // lower for review/factual, higher for ideation
 )
 ```
 
-The default is `grok-4.3` — xAI's flagship: 1M context, function calling,
-vision, configurable reasoning. Tune `reasoning_effort`:
+`grok_chat` runs on `grok-4.5` — xAI's flagship: 500k context, function
+calling, vision. It **always** reasons; there is no off switch (passing
+`reasoning_effort = "none"` is rejected before the call is made). Tune the
+depth:
 
-- `"none"` — skip reasoning entirely. Fastest and cheapest; use for short
-  lookups, yes/no checks, simple rewrites.
-- `"low"` (xAI default) — baseline reasoning. Good for general chat.
+- `"low"` — baseline reasoning. Good for general chat.
 - `"medium"` — extra deliberation. Use for code-review and design questions.
-- `"high"` — deepest reasoning. Reserve for hard problems (architecture
-  critique, tricky maths, sycophancy-resistant analysis).
+- `"high"` (xAI default) — deepest reasoning. Right for hard problems
+  (architecture critique, tricky maths, sycophancy-resistant analysis).
 
-`reasoning_effort` also accepts `"xhigh"`, but it only means something on
-`model = "grok-4.20-multi-agent-0309"` — there it controls how many agents run
-(4 vs 16) rather than reasoning depth, and is rejected on `grok-4.3`. Beyond
-the multi-agent model, xAI also offers `grok-4.20-0309-reasoning` /
-`grok-4.20-0309-non-reasoning` (1M context) and `grok-build-0.1` (256k,
-coding-focused) via `model`; `grok-4.3` remains the recommended default for
-general use.
+For a genuinely fast answer, use the tool built for it:
+
+```
+grok_chat_fast(message = "<short lookup>")   // grok-4.20-0309-non-reasoning, 1M context
+```
+
+That model *cannot* reason, so it never burns thinking tokens — which is the
+point. It deliberately has no `reasoning_effort` and no `model` parameter. Use
+it for lookups, yes/no checks, classification, extraction and reformatting.
+
+For problems worth an independent cross-check:
+
+```
+grok_chat_multi_agent(message = "<hard problem>", agents = 4 | 16)
+```
+
+A team of agents works the question in parallel and reconciles the answers.
+The overhead is real — a trivial question still costs thousands of tokens
+(xAI ships a large system prompt with it) — so reserve it accordingly. Its
+answers often end with a `\confidence{N}` marker; that is the model's own
+output, not a wrapper artifact.
+
+If you need more than 500k context, pass `model = "grok-4.3"` to `grok_chat`
+(1M context, weaker model). `grok-build-0.1` (256k, coding-focused) is also
+reachable that way.
 
 ### 5. Chat — second-opinion / design review
 
@@ -327,12 +348,13 @@ the current process lifetime, not for persistence.
 
 ### Knowledge cutoff lags real time
 
-Grok's training cutoff lags real time by several months — fundamentals are
-reliable, but for **current package versions, newest API features, or
-month-old releases, verify against primary sources** rather than trusting
-Grok's recollection. (Historical: this footgun was first observed in a
-sycophancy-resistance test when the default was `grok-3-mini` with a
-2023–2024 cutoff. `grok-4.3` is newer but the principle stands.)
+Grok's training cutoff lags real time by several months — `grok-4.5`'s is
+**1 February 2026**. Fundamentals are reliable, but for **current package
+versions, newest API features, or month-old releases, verify against primary
+sources** rather than trusting Grok's recollection. (Historical: this footgun
+was first observed in a sycophancy-resistance test when the default was
+`grok-3-mini` with a 2023–2024 cutoff. The model keeps getting newer; the
+principle stands.)
 
 ### `output_path` must be absolute
 
@@ -467,36 +489,41 @@ unredacted customer data, or NDA-covered material into Grok prompts.
 
 ## Model & reasoning-effort cheat sheet
 
-Chat and vision both run on `grok-4.3` (default). The shape of the answer is
-controlled by `reasoning_effort` on `grok_chat`, not by swapping models. xAI
-also publishes `grok-4.20-0309-reasoning` / `grok-4.20-0309-non-reasoning` /
-`grok-4.20-multi-agent-0309` (all 1M context) and `grok-build-0.1` (256k,
-coding-focused) — pass any of these via `model` for specialized needs, but
-`grok-4.3` stays the recommended default.
+Chat and vision run on `grok-4.5` (default). Whether Grok reasons is decided by
+**which tool you call**; `reasoning_effort` only tunes the depth once you are
+already on the reasoning model.
 
 | Task | Tool | `reasoning_effort` | Why |
 |---|---|---|---|
-| Quick fact, yes/no, short rephrase | `grok_chat` | `"none"` | Skip reasoning — fastest and cheapest. |
-| General chat, casual question | `grok_chat` | omit (xAI default `"low"`) | Baseline reasoning, sensible defaults. |
+| Quick fact, yes/no, short rephrase, classification | `grok_chat_fast` | n/a — the model cannot reason | Fastest and cheapest. `grok-4.5` would burn thinking tokens even on "2+2". |
+| General chat, casual question | `grok_chat` | `"low"` | Baseline reasoning. |
 | Code review, technical critique | `grok_chat` | `"medium"` | Extra deliberation for non-trivial calls. |
-| Design review, architecture critique, hard reasoning | `grok_chat` | `"high"` | Deepest reasoning — structured push-back. |
-| Multi-agent orchestration | `grok_chat` (`model="grok-4.20-multi-agent-0309"`) | `"xhigh"` | Not deeper reasoning — spins up 16 agents instead of 4. |
-| Vision (describe, OCR-like, diagram reading) | `grok_describe_image` | n/a | grok-4.3 is the vision-capable model. |
+| Design review, architecture critique, hard reasoning | `grok_chat` | omit (xAI default `"high"`) | Deepest reasoning — structured push-back. |
+| Problem worth an independent cross-check | `grok_chat_multi_agent` (`agents = 4` or `16`) | n/a — use `agents` | A team works it in parallel and reconciles. Slow, thousands of tokens of overhead. |
+| More than 500k context | `grok_chat` (`model="grok-4.3"`) | `"low"`–`"high"` | 1M context, weaker model. The only reason to override `model`. |
+| Vision (describe, OCR-like, diagram reading) | `grok_describe_image` | n/a | `grok-4.5` is the vision-capable model. |
 | Image gen / edit | `grok_generate_image` / `grok_edit_image` | n/a | Default `grok-imagine-image`; pass `model="grok-imagine-image-quality"` for a higher-quality, flat-priced alternative. |
 | Video gen | `grok_generate_video` | n/a | Auto-selected: `grok-imagine-video-1.5` with a seed image (image-to-video), `grok-imagine-video` for text-to-video. `grok-imagine-video-1.5` rejects text-to-video (HTTP 400). |
 
 Pass `reasoning_effort` per call rather than changing the server default. The
-server-side default is "let xAI decide" (currently `"low"`), which is right
-for most chat.
+server-side default is "let xAI decide" (`"high"` on `grok-4.5`).
+
+**Gotcha:** `grok-4.20-multi-agent-0309` is *not* reachable through `grok_chat`
+even via `model` — xAI rejects it on `/chat/completions` with HTTP 400
+("Multi Agent requests are not allowed on chat completions"). It only works on
+the `/responses` endpoint, which is what `grok_chat_multi_agent` calls. Earlier
+versions of this document recommended the `model`+`"xhigh"` route; that never
+worked.
 
 ### Session prompt-prefix caching
 
 When you pass a `session_id`, the server attaches an `x-grok-conv-id` header
 so xAI routes the request to the same backend. Repeat-prefix tokens then bill
-at the **cached rate (`$0.20/M` input, ~16% of normal)** instead of the
-full `$1.25/M`. Practical implication: long-lived `session_id`-chats with a
-shared system prompt and growing history are dramatically cheaper than
-stateless one-shots that re-send the same context every turn.
+at the **cached rate (`$0.50/M` input on `grok-4.5`, a quarter of normal)**
+instead of the full `$2.00/M`. Practical implication: long-lived
+`session_id`-chats with a shared system prompt and growing history are
+dramatically cheaper than stateless one-shots that re-send the same context
+every turn.
 
 Three rules to keep the cache hitting:
 

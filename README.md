@@ -11,7 +11,9 @@ One background process, many parallel Claude Code clients. Loopback-only (127.0.
 
 | Tool | What it does |
 |---|---|
-| `grok_chat` | Chat completion. Stateless by default; pass `session_id` to keep an in-memory thread within the server's process lifetime. Sessions are shared across all connected clients. |
+| `grok_chat` | Chat completion on the flagship model (`grok-4.5`). Always reasons. Stateless by default; pass `session_id` to keep an in-memory thread within the server's process lifetime. Sessions are shared across all connected clients. |
+| `grok_chat_fast` | Same, on a dedicated non-reasoning model (`grok-4.20-0309-non-reasoning`, 1M context). Answers without thinking first — for lookups, classification, extraction, reformatting. |
+| `grok_chat_multi_agent` | Sends a hard problem to `grok-4.20-multi-agent-0309`, where `agents` (4 or 16) work it in parallel and reconcile. Slow and token-hungry; reserve it for problems worth the cross-check. |
 | `grok_generate_image` | Text → image, saved to `output_path` and returned inline so Claude sees it. |
 | `grok_edit_image` | Input image(s) + prompt → modified image, same output handling. |
 | `grok_describe_image` | Vision: ask Grok to analyze image(s). Returns text. |
@@ -27,7 +29,7 @@ One background process, many parallel Claude Code clients. Loopback-only (127.0.
    - Install to `%LOCALAPPDATA%\Programs\grok-mcp\` (no UAC).
    - Register a Scheduled Task that starts the server on every logon and auto-restarts on crash.
    - Register the MCP with Claude Code (`user` scope) — if the `claude` CLI is on PATH.
-3. Open any Claude Code session — `/mcp` should show `grok` connected with 5 tools.
+3. Open any Claude Code session — `/mcp` should show `grok` connected with 7 tools.
 
 Re-running the installer is safe: an existing `config.env` is preserved and the service is bounced to pick up the new build.
 
@@ -44,8 +46,10 @@ The server reads `config.env` files at startup. Priority (highest wins):
 | Var | Default | Purpose |
 |---|---|---|
 | `XAI_API_KEY` | — (required, fail fast) | Bearer token |
-| `GROK_MCP_CHAT_MODEL` | `grok-4.3` | default chat model |
-| `GROK_MCP_CREATIVE_MODEL` | `grok-4.3` | default vision/heavy model |
+| `GROK_MCP_CHAT_MODEL` | `grok-4.5` | default `grok_chat` model |
+| `GROK_MCP_CREATIVE_MODEL` | `grok-4.5` | default vision/heavy model |
+| `GROK_MCP_FAST_MODEL` | `grok-4.20-0309-non-reasoning` | model behind `grok_chat_fast`; must be one that cannot reason |
+| `GROK_MCP_MULTI_AGENT_MODEL` | `grok-4.20-multi-agent-0309` | model behind `grok_chat_multi_agent` (needs the `/responses` endpoint) |
 | `GROK_MCP_IMAGE_MODEL` | `grok-imagine-image` | default image gen/edit model |
 | `GROK_MCP_VIDEO_MODEL` | (auto) | pin video model; default auto-selects `grok-imagine-video-1.5` (image-to-video) / `grok-imagine-video` (text-to-video) |
 | `GROK_MCP_LOG_LEVEL` | `Information` | `Trace`/`Debug`/`Information`/`Warning`/`Error` |
@@ -111,13 +115,15 @@ Tests do not hit the xAI API — that surface is still verified manually via the
 
 After install, in a fresh Claude Code session with the MCP wired up:
 
-1. `/mcp` — `grok` connected, 5 tools listed.
-2. *"Use grok_chat to greet me in five languages."* Expect <2s round-trip; log shows token usage.
-3. *"Use grok_chat with session_id='test1' to remember my name is Chloe. Then in a separate call with the same session_id ask what my name is."* Expect "Chloe". This works **across different Claude Code sessions** now — try it with two terminal windows open.
-4. *"Use grok_generate_image with prompt='a tiny pixel-art mushroom on transparent background' and output_path='C:\\Users\\you\\Desktop\\grok-test\\mushroom.png'."* Expect the file on disk + Claude can describe the inline image without re-reading it.
-5. *"Use grok_edit_image with images=['…\\mushroom.png'], prompt='now make it a glowing crystal mushroom', output_path='…\\crystal.png'."* Expect a recognizably-derived new image.
-6. *"Use grok_describe_image on `crystal.png` and tell me its color palette."* Expect coherent description.
-7. *"Use grok_generate_video with prompt='a tiny pixel-art mushroom slowly rotating', duration=1, resolution='480p', output_path='C:\\Users\\you\\Desktop\\grok-test\\mushroom.mp4'."* Keep it short (1s / 480p) — this can still take a minute or more to complete and spends real API credit. Expect an MP4 on disk.
+1. `/mcp` — `grok` connected, 7 tools listed.
+2. *"Use grok_chat to greet me in five languages."* Expect a few seconds' round-trip (`grok-4.5` reasons before answering); log shows token usage.
+3. *"Use grok_chat_fast to name the capital of France in one word."* Expect "Paris" and no reasoning tokens — this is the non-reasoning path.
+4. *"Use grok_chat_multi_agent with agents=4 to sanity-check <some claim>."* Expect a reconciled answer, often ending in a `\confidence{N}` marker. Slower and far more tokens than `grok_chat` — that's inherent to the model.
+5. *"Use grok_chat with session_id='test1' to remember my name is Chloe. Then in a separate call with the same session_id ask what my name is."* Expect "Chloe". This works **across different Claude Code sessions** now — try it with two terminal windows open.
+6. *"Use grok_generate_image with prompt='a tiny pixel-art mushroom on transparent background' and output_path='C:\\Users\\you\\Desktop\\grok-test\\mushroom.png'."* Expect the file on disk + Claude can describe the inline image without re-reading it.
+7. *"Use grok_edit_image with images=['…\\mushroom.png'], prompt='now make it a glowing crystal mushroom', output_path='…\\crystal.png'."* Expect a recognizably-derived new image.
+8. *"Use grok_describe_image on `crystal.png` and tell me its color palette."* Expect coherent description.
+9. *"Use grok_generate_video with prompt='a tiny pixel-art mushroom slowly rotating', duration=1, resolution='480p', output_path='C:\\Users\\you\\Desktop\\grok-test\\mushroom.mp4'."* Keep it short (1s / 480p) — this can still take a minute or more to complete and spends real API credit. Expect an MP4 on disk.
 
 ## Project layout
 

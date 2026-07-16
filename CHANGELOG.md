@@ -4,6 +4,78 @@ All notable changes to grok-mcp are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Grok's chat surface is now one tool per intent instead of one tool with a
+model-dependent flag matrix. xAI only accepts `reasoning_effort` in
+model-specific combinations, and encoding that in tool names removes the
+guesswork from the calling agent.
+
+### Added
+- **`grok_chat_fast`** — chat on a dedicated non-reasoning model
+  (`grok-4.20-0309-non-reasoning`, 1M context). Has no `reasoning_effort` and
+  no `model` parameter by design: the model *cannot* reason, which is what
+  makes it fast. For lookups, classification, extraction, reformatting.
+- **`grok_chat_multi_agent`** — chat on `grok-4.20-multi-agent-0309` with an
+  honest `agents` parameter (4 or 16) instead of xAI's `reasoning_effort:
+  "xhigh"` overload. Runs against the `/responses` endpoint (new
+  `GrokClient.ResponsesAsync`), which is the only endpoint that accepts this
+  model.
+- `GROK_MCP_FAST_MODEL` and `GROK_MCP_MULTI_AGENT_MODEL` config vars.
+
+### Changed
+- **Default chat/vision model is now `grok-4.5`** (was `grok-4.3`): stronger
+  model, 500k context, always-on reasoning defaulting to `"high"`. Pass
+  `model="grok-4.3"` to `grok_chat` if you need its 1M context.
+- `grok_describe_image` defaults to `grok-4.5`.
+
+### Removed
+- **Breaking:** `grok_chat` no longer accepts `reasoning_effort="none"` or
+  `"xhigh"`. `grok-4.5` rejects `"none"` with HTTP 400, so the tool now fails
+  fast with a message pointing at `grok_chat_fast` (for `"none"`) or
+  `grok_chat_multi_agent` (for `"xhigh"`) instead of spending a call.
+
+### Fixed
+- Documentation recommended reaching multi-agent via
+  `grok_chat(model="grok-4.20-multi-agent-0309", reasoning_effort="xhigh")`.
+  That never worked — xAI rejects the model on `/chat/completions` with HTTP
+  400 ("Multi Agent requests are not allowed on chat completions"). Use
+  `grok_chat_multi_agent`.
+- The seeded `config.env` template named `grok-3-mini` and `grok-4-latest` as
+  defaults; both models have since been retired by xAI.
+
+## [1.1.0] - 2026-07-02
+
+Video generation, and the move to `grok-4.3`. Backfilled on 2026-07-16 — this
+release was tagged and shipped without a changelog entry at the time.
+
+### Added
+- **`grok_generate_video`** — text (+ optional seed image) → MP4, saved to
+  `output_path`. xAI's video API is asynchronous: the call polls every 5s until
+  `done`/`failed`/`expired`, giving up after 10 minutes. Bytes are sniffed for
+  the `ftyp` box and the extension reconciled the same way `ImageWriter` does.
+  The model auto-selects per mode — `grok-imagine-video-1.5` for image-to-video,
+  `grok-imagine-video` for text-to-video, because 1.5 rejects text-to-video with
+  HTTP 400. Pin one via `GROK_MCP_VIDEO_MODEL`.
+- `reasoning_effort` on `grok_chat` (`"none"`/`"low"`/`"medium"`/`"high"`),
+  serialized only when set so xAI's own default applies otherwise.
+- **Sticky session caching** — with a `session_id`, an `x-grok-conv-id` header
+  routes the request to the same xAI backend, so repeat-prefix tokens bill at
+  the cached rate instead of full price.
+- `resolution` (`1k`/`2k`) on the image tools, the full `aspect_ratio` list
+  including `auto`, and `grok-imagine-image-quality` documented as an override.
+- `/release` slash command.
+
+### Changed
+- Chat and vision defaults moved from `grok-3-mini` / `grok-4-latest` to
+  **`grok-4.3`** (1M context, vision, function calling, configurable reasoning).
+  Both old models were retired by xAI shortly afterwards.
+
+### Notes
+- This release also advertised `reasoning_effort="xhigh"` with
+  `model="grok-4.20-multi-agent-0309"` on `grok_chat`. That combination never
+  worked — see the `Unreleased` section above.
+
 ## [1.0.0] - 2026-05-10
 
 First public release. This rebuild fixes the chronic "MCP failed" reconnect

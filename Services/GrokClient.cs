@@ -64,6 +64,67 @@ public class GrokClient
         return await PostChatAsync(url, body, msgList, resolvedModel, conversationId, ct);
     }
 
+    // Multi-agent runs on /responses, not /chat/completions — xAI rejects the multi-agent model
+    // there with HTTP 400 "Multi Agent requests are not allowed on chat completions". The wire
+    // format differs on both ends: 'input' instead of 'messages', and the answer arrives as
+    // output[].content[].text instead of choices[0].message.content.
+    public async Task<ChatResult> ResponsesAsync(
+        IEnumerable<object> messages,
+        string? model,
+        float temperature,
+        string? reasoningEffort,
+        string? conversationId,
+        CancellationToken ct)
+    {
+        var resolvedModel = string.IsNullOrWhiteSpace(model) ? _opts.MultiAgentModel : model;
+        var msgList = messages.ToList();
+        var body = new Dictionary<string, object>
+        {
+            ["model"] = resolvedModel,
+            ["input"] = msgList,
+            ["temperature"] = temperature,
+        };
+        if (!string.IsNullOrWhiteSpace(reasoningEffort))
+            body["reasoning_effort"] = reasoningEffort;
+
+        var url = $"{_opts.ApiBaseUrl.TrimEnd('/')}/responses";
+        var promptPreview = TryExtractFirstUserText(msgList);
+        var json = await PostWithRetryAsync(url, body, resolvedModel, promptPreview, conversationId, ct);
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        int promptTokens = -1, completionTokens = -1, totalTokens = -1;
+        if (root.TryGetProperty("usage", out var usage))
+        {
+            // /responses names these differently from /chat/completions.
+            promptTokens = usage.TryGetProperty("input_tokens", out var p) ? p.GetInt32() : -1;
+            completionTokens = usage.TryGetProperty("output_tokens", out var c) ? c.GetInt32() : -1;
+            totalTokens = usage.TryGetProperty("total_tokens", out var t) ? t.GetInt32() : -1;
+            _log.LogInformation("Grok [{Model}] tokens — input: {Input}, output: {Output}, total: {Total}",
+                resolvedModel, promptTokens, completionTokens, totalTokens);
+        }
+
+        var sb = new StringBuilder();
+        if (root.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in output.EnumerateArray())
+            {
+                // Items without a content array are reasoning/tool entries, not the answer.
+                if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                    continue;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (part.TryGetProperty("type", out var type) && type.GetString() == "output_text" &&
+                        part.TryGetProperty("text", out var text))
+                        sb.Append(text.GetString());
+                }
+            }
+        }
+
+        return new ChatResult(sb.ToString(), promptTokens, completionTokens, totalTokens);
+    }
+
     public async Task<string> VisionAsync(
         string prompt,
         IEnumerable<object> imageObjects,
@@ -327,7 +388,8 @@ public class GrokClient
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opts.ApiKey);
             // Sticky-route to the same xAI server so the prompt-prefix cache hits across turns
-            // (cached input ≈ 1/6 the price of normal input on grok-4.3). Header documented in
+            // (cached input is a quarter of normal input on grok-4.5, a sixth on grok-4.3).
+            // Header documented in
             // https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits
             if (!string.IsNullOrEmpty(conversationId))
                 request.Headers.Add("x-grok-conv-id", conversationId);

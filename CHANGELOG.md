@@ -4,7 +4,7 @@ All notable changes to grok-mcp are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-07-16
 
 Grok's chat surface is now one tool per intent instead of one tool with a
 model-dependent flag matrix. xAI only accepts `reasoning_effort` in
@@ -74,7 +74,7 @@ release was tagged and shipped without a changelog entry at the time.
 ### Notes
 - This release also advertised `reasoning_effort="xhigh"` with
   `model="grok-4.20-multi-agent-0309"` on `grok_chat`. That combination never
-  worked — see the `Unreleased` section above.
+  worked — see 1.2.0 above.
 
 ## [1.0.0] - 2026-05-10
 
